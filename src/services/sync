@@ -210,11 +210,14 @@ async function syncRoutes() {
   console.log(`[Sync] Route sync started at ${now.toLocaleTimeString()}`);
   console.log(`[Sync] Checking plans for ${today} and ${tomorrowStr}`);
 
-  const results = { newStops: 0, updated: 0, skipped: 0, errors: [] };
+  const results = { newStops: 0, updated: 0, removed: 0, skipped: 0, errors: [] };
 
   try {
     const plans = await getPlans(today, tomorrowStr);
     console.log(`[Sync] Found ${plans.length} plan(s)`);
+
+    // Collect ALL stop IDs currently in Spoke across all plans
+    const allSpokeStopIds = new Set();
 
     for (const plan of plans) {
       const planId = plan.id || plan;
@@ -246,6 +249,13 @@ async function syncRoutes() {
       const stops = await getPlanStops(planIdStr);
       console.log(`[Sync] Plan has ${stops.length} stop(s)`);
 
+      // Track all stop IDs from Spoke (skip depot start/end)
+      for (const stop of stops) {
+        if (stop.type !== "start" && stop.type !== "end" && stop.id) {
+          allSpokeStopIds.add(stop.id);
+        }
+      }
+
       for (const stop of stops) {
         try {
           const result = await processStopForSync(stop, planDetails, driverMap);
@@ -258,16 +268,39 @@ async function syncRoutes() {
         }
       }
     }
+
+    // ─── Detect removed stops ───────────────────────────
+    // Find notifications for today/tomorrow whose spoke_stop_id is NOT in Spoke anymore
+    if (allSpokeStopIds.size > 0) {
+      const dbNotifications = db.prepare(
+        `SELECT id, customer_name, spoke_stop_id, status FROM notifications
+         WHERE scheduled_date IN (?, ?)
+         AND spoke_stop_id IS NOT NULL
+         AND status IN ('pending', 'sent')`
+      ).all(today, tomorrowStr);
+
+      for (const n of dbNotifications) {
+        if (!allSpokeStopIds.has(n.spoke_stop_id)) {
+          db.prepare(
+            "UPDATE notifications SET status = 'cancelled', updated_at = ? WHERE id = ?"
+          ).run(new Date().toISOString(), n.id);
+
+          console.log(`[Sync] ✗ Removed: ${n.customer_name} (stop no longer in Spoke)`);
+          logActivity("stop_removed", `Sync removed: ${n.customer_name} — stop no longer in Spoke route`, n.id);
+          results.removed++;
+        }
+      }
+    }
   } catch (err) {
     console.error("[Sync] Fatal error:", err.message);
     results.errors.push(err.message);
   }
 
-  const summary = `Sync complete — ${results.newStops} new, ${results.updated} updated, ${results.skipped} unchanged`;
+  const summary = `Sync complete — ${results.newStops} new, ${results.updated} updated, ${results.removed} removed, ${results.skipped} unchanged`;
   console.log(`[Sync] ${summary}`);
   console.log("[Sync] ═══════════════════════════════════════\n");
 
-  if (results.newStops > 0 || results.updated > 0) {
+  if (results.newStops > 0 || results.updated > 0 || results.removed > 0) {
     logActivity("route_sync", summary);
   }
 
