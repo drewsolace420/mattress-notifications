@@ -288,11 +288,12 @@
                 <th>Product</th>
                 <th>Status</th>
                 <th>Response</th>
+                <th>Review</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="notifications-table">
-              <tr><td colspan="8" class="loading">Loading notifications...</td></tr>
+              <tr><td colspan="9" class="loading">Loading notifications...</td></tr>
             </tbody>
           </table>
         </div>
@@ -530,7 +531,7 @@
         const tbody = document.getElementById('notifications-table');
 
         if (data.notifications.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" class="empty">No notifications match your filters</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="9" class="empty">No notifications match your filters</td></tr>';
           return;
         }
 
@@ -538,6 +539,10 @@
           const responseDisplay = n.customer_response === 'yes' ? '<span style="color:#2dd4bf;font-weight:600">✓ YES</span>'
             : n.customer_response === 'no' ? '<span style="color:#ef4444;font-weight:600">✗ NO</span>'
             : n.customer_response === 'stop' ? '<span style="color:#64748b;font-weight:600">STOP</span>'
+            : '<span style="color:#475569">—</span>';
+          const reviewDisplay = n.review_sent_at
+            ? '<span style="color:#fbbf24;font-weight:600">⭐ Sent</span>'
+            : n.store === 'other' ? '<span style="color:#475569">N/A</span>'
             : '<span style="color:#475569">—</span>';
           return `<tr>
           <td>
@@ -550,6 +555,7 @@
           <td style="color:#94a3b8;font-size:12px">${n.product || '—'}</td>
           <td>${badge(n.status)}</td>
           <td>${responseDisplay}</td>
+          <td>${reviewDisplay}</td>
           <td>
             ${n.status === 'failed' ? `<button class="btn btn-danger" onclick="retrySend(${n.id})">Retry</button>` : ''}
             ${n.status === 'pending' ? `<button class="btn btn-outline" onclick="sendOne(${n.id})">Send</button>` : ''}
