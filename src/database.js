@@ -24,7 +24,6 @@ db.exec(`
     address TEXT,
     scheduled_date TEXT,
     time_window TEXT,
-    raw_delivery_time TEXT,
     product TEXT,
     driver TEXT,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'delivered')),
@@ -32,6 +31,7 @@ db.exec(`
     quo_message_id TEXT,
     spoke_stop_id TEXT,
     spoke_route_id TEXT,
+    raw_delivery_time TEXT,
     customer_response TEXT CHECK(customer_response IN ('yes', 'no', 'stop', NULL)),
     response_at TEXT,
     error_message TEXT,
@@ -67,11 +67,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
 `);
 
-// ─── Migrations: add columns if missing ─────────────────
-try { db.exec("ALTER TABLE notifications ADD COLUMN raw_delivery_time TEXT"); } catch(e) {}
-try { db.exec("ALTER TABLE notifications ADD COLUMN customer_response TEXT"); } catch(e) {}
-try { db.exec("ALTER TABLE notifications ADD COLUMN response_at TEXT"); } catch(e) {}
-
 // ─── Seed default settings ──────────────────────────────
 const upsert = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
 upsert.run("auto_send_enabled", process.env.AUTO_SEND_ENABLED || "true");
@@ -88,5 +83,8 @@ if (templateCount === 0) {
 }
 
 console.log("[DB] Database initialized at", DB_PATH);
+
+// ─── Migrations (safe to run multiple times) ─────────────
+try { db.exec("ALTER TABLE notifications ADD COLUMN review_sent_at TEXT"); } catch(e) {}
 
 module.exports = db;
