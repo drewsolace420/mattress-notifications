@@ -130,7 +130,7 @@ async function handleSpokeWebhook(payload, headers) {
  * Process a stop.allocated webhook event.
  *
  * The webhook strips recipient PII, so we fetch full details from the REST API.
- * We also use the ETA timestamps from the webhook for the time window.
+ * We use the projected ETA (estimatedArrivalAt) for the time window.
  */
 async function processSpokeStop(webhookData) {
   const stopId = webhookData.id; // e.g., "plans/abc123/stops/xyz789"
@@ -197,15 +197,19 @@ async function processSpokeStop(webhookData) {
 
   // ─── Delivery time window from ETA ───
   // Spoke provides Unix timestamps (seconds):
-  //   estimatedArrivalAt, estimatedEarliestArrivalAt, estimatedLatestArrivalAt
+  //   estimatedArrivalAt — projected arrival (USE THIS)
+  //   estimatedEarliestArrivalAt — earliest possible
+  //   estimatedLatestArrivalAt — latest possible
+  //
+  // We use the projected arrival and round UP to nearest 30 min for the window start.
   let rawDeliveryTime = null;
   let timeWindow = "TBD";
 
   const etaTimestamp =
-    webhookEta.estimatedEarliestArrivalAt ||
     webhookEta.estimatedArrivalAt ||
-    data.eta?.estimatedEarliestArrivalAt ||
+    webhookEta.estimatedEarliestArrivalAt ||
     data.eta?.estimatedArrivalAt ||
+    data.eta?.estimatedEarliestArrivalAt ||
     null;
 
   if (etaTimestamp) {
@@ -247,7 +251,6 @@ async function processSpokeStop(webhookData) {
   const driverRef = routeData.driver; // e.g., "drivers/4ccrTaAFAa1wol3twCY5"
 
   if (typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
-    // Fetch driver name from API
     const driverData = await spokeApiFetch(driverRef);
     if (driverData) {
       driver = driverData.displayName || driverData.name || "Your driver";
@@ -260,12 +263,11 @@ async function processSpokeStop(webhookData) {
   // ─── Store/depot ───
   let store = "unknown";
 
-  // Try to get depot from driver's depots
-  if (typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
-    const driverData = await spokeApiFetch(driverRef);
-    if (driverData?.depots?.[0]) {
-      const depotRef = driverData.depots[0]; // e.g., "depots/HSlWAAgu1h1M2Ln8TGGd"
-      const depotData = await spokeApiFetch(depotRef);
+  // Try depot from webAppLink
+  if (webhookData.webAppLink) {
+    const depotMatch = webhookData.webAppLink.match(/depotId=([^&]+)/);
+    if (depotMatch) {
+      const depotData = await spokeApiFetch(`depots/${depotMatch[1]}`);
       if (depotData) {
         store = resolveStore(depotData.name || depotData.title || "");
         console.log("[Spoke] Store from depot:", store);
@@ -273,14 +275,14 @@ async function processSpokeStop(webhookData) {
     }
   }
 
-  // Fallback: extract depot from webAppLink
-  if (store === "unknown" && webhookData.webAppLink) {
-    const depotMatch = webhookData.webAppLink.match(/depotId=([^&]+)/);
-    if (depotMatch) {
-      const depotData = await spokeApiFetch(`depots/${depotMatch[1]}`);
+  // Fallback: try driver's depots
+  if (store === "unknown" && typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
+    const driverData = await spokeApiFetch(driverRef);
+    if (driverData?.depots?.[0]) {
+      const depotData = await spokeApiFetch(driverData.depots[0]);
       if (depotData) {
         store = resolveStore(depotData.name || depotData.title || "");
-        console.log("[Spoke] Store from webAppLink depot:", store);
+        console.log("[Spoke] Store from driver depot:", store);
       }
     }
   }
