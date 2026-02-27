@@ -1,28 +1,42 @@
 /**
- * Daily Scheduler — 6 PM EST Send
+ * Daily Scheduler
+ *
+ * TWO SCHEDULED EVENTS:
+ *
+ * 1) 6:00 PM EST (Mon–Fri) — Customer SMS
+ *    Sends delivery confirmation texts for tomorrow's stops.
+ *
+ * 2) 9:00 PM EST (Mon–Fri) — Staff Summary
+ *    Sends a summary text to the scheduling staff member with:
+ *    - Confirmed stops (replied YES)
+ *    - Declined stops (replied NO)
+ *    - No-reply stops (sent but no response)
+ *    - Pending stops (not yet sent, if any)
  *
  * SCHEDULE:
- *   Monday 6 PM    → sends for Tuesday deliveries
- *   Tuesday 6 PM   → sends for Wednesday deliveries
- *   Wednesday 6 PM → sends for Thursday deliveries
- *   Thursday 6 PM  → sends for Friday deliveries
- *   Friday 6 PM    → sends for Saturday deliveries
- *   Saturday       → NO SEND (Sunday = no delivery)
- *   Sunday         → NO SEND (Monday = no delivery)
- *
- * This uses a simple interval check rather than a cron dependency.
- * Checks every minute if it's time to fire.
+ *   Monday    → Tuesday deliveries
+ *   Tuesday   → Wednesday deliveries
+ *   Wednesday → Thursday deliveries
+ *   Thursday  → Friday deliveries
+ *   Friday    → Saturday deliveries
+ *   Saturday  → NO SEND
+ *   Sunday    → NO SEND
  */
 
 const db = require("../database");
 const { sendSms } = require("./quo");
 const { getSmsBody, isSendDay } = require("./templates");
 
-const SEND_HOUR = 18; // 6 PM
+const SEND_HOUR = 18; // 6 PM — customer texts
 const SEND_MINUTE = 0;
+const SUMMARY_HOUR = 21; // 9 PM — staff summary
+const SUMMARY_MINUTE = 0;
 const CHECK_INTERVAL_MS = 60 * 1000; // check every minute
 
-let lastSendDate = null; // prevent double-sends on the same day
+const STAFF_PHONE = "+18593336243";
+
+let lastSendDate = null;    // prevent double customer sends
+let lastSummaryDate = null; // prevent double summary sends
 
 /**
  * Get current time in EST/EDT
@@ -34,24 +48,32 @@ function getESTNow() {
 }
 
 /**
- * Check if it's time to send (6 PM EST on a weekday)
- * and we haven't already sent today.
+ * Check if it's time to send customer texts (6 PM EST on a weekday)
  */
 function shouldSendNow() {
   const now = getESTNow();
   const today = now.toISOString().split("T")[0];
 
-  // Already sent today?
   if (lastSendDate === today) return false;
-
-  // Is it a send day (Mon–Fri)?
   if (!isSendDay(now)) return false;
-
-  // Is it 6 PM (or within the first minute of 6 PM)?
   if (now.getHours() === SEND_HOUR && now.getMinutes() >= SEND_MINUTE) {
     return true;
   }
+  return false;
+}
 
+/**
+ * Check if it's time to send the staff summary (9 PM EST on a weekday)
+ */
+function shouldSendSummary() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
+
+  if (lastSummaryDate === today) return false;
+  if (!isSendDay(now)) return false;
+  if (now.getHours() === SUMMARY_HOUR && now.getMinutes() >= SUMMARY_MINUTE) {
+    return true;
+  }
   return false;
 }
 
@@ -63,7 +85,6 @@ async function executeDailySend() {
   const now = getESTNow();
   const today = now.toISOString().split("T")[0];
 
-  // Calculate tomorrow's date
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split("T")[0];
@@ -72,7 +93,6 @@ async function executeDailySend() {
   console.log(`[Scheduler] Daily send triggered at 6 PM EST`);
   console.log(`[Scheduler] Sending for deliveries on: ${tomorrowStr}`);
 
-  // Get all pending notifications for tomorrow
   const pending = db
     .prepare(
       "SELECT * FROM notifications WHERE status = 'pending' AND scheduled_date = ?"
@@ -113,7 +133,6 @@ async function executeDailySend() {
       );
       results.sent++;
 
-      // Small delay between sends to avoid rate limiting
       await sleep(500);
     } catch (err) {
       db.prepare(
@@ -144,6 +163,111 @@ async function executeDailySend() {
   return results;
 }
 
+/**
+ * Execute the 9 PM staff summary.
+ * Sends a text to the staff member summarizing tomorrow's delivery status.
+ */
+async function executeStaffSummary() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split("T")[0];
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const tomorrowDay = dayNames[tomorrow.getDay()];
+  const tomorrowFormatted = tomorrow.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  console.log(`\n[Scheduler] ═══════════════════════════════════════`);
+  console.log(`[Scheduler] Staff summary triggered at 9 PM EST`);
+  console.log(`[Scheduler] Summary for deliveries on: ${tomorrowStr}`);
+
+  // Get all notifications for tomorrow
+  const all = db
+    .prepare("SELECT * FROM notifications WHERE scheduled_date = ?")
+    .all(tomorrowStr);
+
+  if (all.length === 0) {
+    console.log(`[Scheduler] No deliveries scheduled for ${tomorrowStr} — skipping summary`);
+    logActivity("summary_skipped", `No deliveries for ${tomorrowStr} — no summary sent`);
+    lastSummaryDate = today;
+    return;
+  }
+
+  // Categorize
+  const confirmed = all.filter(n => n.customer_response === "yes");
+  const declined = all.filter(n => n.customer_response === "no");
+  const noReply = all.filter(n => n.status === "sent" && !n.customer_response);
+  const pending = all.filter(n => n.status === "pending");
+  const failed = all.filter(n => n.status === "failed");
+
+  // Build summary message
+  let msg = `Delivery Summary for ${tomorrowDay}, ${tomorrowFormatted}\n`;
+  msg += `${all.length} total stop${all.length !== 1 ? "s" : ""}\n`;
+  msg += `─────────────\n`;
+
+  if (confirmed.length > 0) {
+    msg += `\n✅ CONFIRMED (${confirmed.length}):\n`;
+    for (const n of confirmed) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  if (declined.length > 0) {
+    msg += `\n❌ DECLINED (${declined.length}):\n`;
+    for (const n of declined) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += ` ⚠️ NEEDS RESCHEDULE\n`;
+    }
+  }
+
+  if (noReply.length > 0) {
+    msg += `\n⏳ NO REPLY (${noReply.length}):\n`;
+    for (const n of noReply) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  if (pending.length > 0) {
+    msg += `\n🔸 NOT YET SENT (${pending.length}):\n`;
+    for (const n of pending) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  if (failed.length > 0) {
+    msg += `\n🔴 FAILED TO SEND (${failed.length}):\n`;
+    for (const n of failed) {
+      msg += `• ${n.customer_name} — ${n.phone}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  console.log(`[Scheduler] Summary message:\n${msg}`);
+
+  // Send to staff
+  try {
+    await sendSms(STAFF_PHONE, msg);
+    console.log(`[Scheduler] ✓ Staff summary sent to ${STAFF_PHONE}`);
+    logActivity("staff_summary_sent", `9 PM summary sent — ${confirmed.length} confirmed, ${declined.length} declined, ${noReply.length} no reply, ${pending.length} pending, ${failed.length} failed`);
+  } catch (err) {
+    console.error(`[Scheduler] ✗ Failed to send staff summary:`, err.message);
+    logActivity("staff_summary_failed", `Failed to send 9 PM summary: ${err.message}`);
+  }
+
+  console.log(`[Scheduler] ═══════════════════════════════════════\n`);
+  lastSummaryDate = today;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -156,7 +280,7 @@ function logActivity(type, detail, notificationId = null) {
 
 /**
  * Start the scheduler loop.
- * Checks every minute if it's time to send.
+ * Checks every minute for both 6 PM and 9 PM triggers.
  */
 function startScheduler() {
   const now = getESTNow();
@@ -165,11 +289,11 @@ function startScheduler() {
   console.log(`[Scheduler] Started — checking every minute`);
   console.log(`[Scheduler] Current EST time: ${now.toLocaleString()}`);
   console.log(`[Scheduler] Today is ${dayNames[now.getDay()]} — ${isSendDay(now) ? "SEND DAY ✓" : "NO SEND (weekend)"}`);
-  console.log(`[Scheduler] Next send: 6:00 PM EST on next weekday`);
+  console.log(`[Scheduler] Customer SMS: 6:00 PM EST | Staff summary: 9:00 PM EST`);
 
-  logActivity("scheduler_started", `Scheduler initialized — send time: 6:00 PM EST, Mon–Fri`);
+  logActivity("scheduler_started", `Scheduler initialized — 6 PM customer send + 9 PM staff summary, Mon–Fri`);
 
-  // Check immediately on startup (in case server restarted after 6 PM)
+  // Check immediately on startup
   checkAndSend();
 
   // Then check every minute
@@ -177,12 +301,23 @@ function startScheduler() {
 }
 
 async function checkAndSend() {
+  // 6 PM — customer texts
   if (shouldSendNow()) {
     try {
       await executeDailySend();
     } catch (err) {
       console.error("[Scheduler] Fatal error during daily send:", err);
       logActivity("scheduler_error", `Fatal error: ${err.message}`);
+    }
+  }
+
+  // 9 PM — staff summary
+  if (shouldSendSummary()) {
+    try {
+      await executeStaffSummary();
+    } catch (err) {
+      console.error("[Scheduler] Fatal error during staff summary:", err);
+      logActivity("scheduler_error", `Staff summary error: ${err.message}`);
     }
   }
 }
@@ -198,7 +333,6 @@ function getSchedulerStatus() {
   let nextSend = new Date(now);
   nextSend.setHours(SEND_HOUR, SEND_MINUTE, 0, 0);
 
-  // If past 6 PM today or not a send day, advance to next weekday
   if (now.getHours() >= SEND_HOUR || !isSendDay(now)) {
     do {
       nextSend.setDate(nextSend.getDate() + 1);
@@ -206,12 +340,22 @@ function getSchedulerStatus() {
     nextSend.setHours(SEND_HOUR, SEND_MINUTE, 0, 0);
   }
 
-  // Tomorrow for delivery context
+  // Find next summary time
+  let nextSummary = new Date(now);
+  nextSummary.setHours(SUMMARY_HOUR, SUMMARY_MINUTE, 0, 0);
+
+  if (now.getHours() >= SUMMARY_HOUR || !isSendDay(now)) {
+    do {
+      nextSummary.setDate(nextSummary.getDate() + 1);
+    } while (!isSendDay(nextSummary));
+    nextSummary.setHours(SUMMARY_HOUR, SUMMARY_MINUTE, 0, 0);
+  }
+
+  // Delivery date context
   const deliveryDate = new Date(nextSend);
   deliveryDate.setDate(deliveryDate.getDate() + 1);
-
-  // Count pending for next delivery date
   const deliveryStr = deliveryDate.toISOString().split("T")[0];
+
   const pendingCount = db
     .prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'pending' AND scheduled_date = ?")
     .get(deliveryStr)?.count || 0;
@@ -221,11 +365,14 @@ function getSchedulerStatus() {
     todayIsSendDay: isSendDay(now),
     todayName: dayNames[now.getDay()],
     lastSendDate,
+    lastSummaryDate,
     nextSendTime: nextSend.toLocaleString("en-US", { timeZone: "America/New_York" }),
     nextSendDay: dayNames[nextSend.getDay()],
+    nextSummaryTime: nextSummary.toLocaleString("en-US", { timeZone: "America/New_York" }),
     nextDeliveryDate: deliveryStr,
     pendingForNextDelivery: pendingCount,
+    staffPhone: STAFF_PHONE,
   };
 }
 
-module.exports = { startScheduler, executeDailySend, getSchedulerStatus };
+module.exports = { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus };
