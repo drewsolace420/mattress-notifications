@@ -244,6 +244,63 @@ app.get("/api/stats", (req, res) => {
   res.json(stats);
 });
 
+// ─── Charts / Reporting API ─────────────────────────────
+app.get("/api/charts/daily", (req, res) => {
+  const days = Number(req.query.days) || 14;
+  const rows = db.prepare(`
+    SELECT scheduled_date as date,
+      COUNT(*) as total,
+      SUM(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) as sent,
+      SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+      SUM(CASE WHEN customer_response = 'yes' THEN 1 ELSE 0 END) as confirmed,
+      SUM(CASE WHEN customer_response = 'no' THEN 1 ELSE 0 END) as declined,
+      SUM(CASE WHEN review_sent_at IS NOT NULL THEN 1 ELSE 0 END) as reviews_sent
+    FROM notifications
+    WHERE scheduled_date IS NOT NULL
+    GROUP BY scheduled_date
+    ORDER BY scheduled_date DESC
+    LIMIT ?
+  `).all(days);
+  res.json(rows.reverse());
+});
+
+app.get("/api/charts/stores", (req, res) => {
+  const rows = db.prepare(`
+    SELECT store,
+      COUNT(*) as total,
+      SUM(CASE WHEN customer_response = 'yes' THEN 1 ELSE 0 END) as confirmed,
+      SUM(CASE WHEN customer_response = 'no' THEN 1 ELSE 0 END) as declined,
+      SUM(CASE WHEN review_sent_at IS NOT NULL THEN 1 ELSE 0 END) as reviews_sent
+    FROM notifications
+    WHERE store IS NOT NULL AND store != 'unknown'
+    GROUP BY store
+    ORDER BY total DESC
+  `).all();
+  res.json(rows);
+});
+
+app.get("/api/charts/responses", (req, res) => {
+  const total = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status IN ('sent','delivered')").get().count;
+  const yes = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'yes'").get().count;
+  const no = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'no'").get().count;
+  const stop = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'stop'").get().count;
+  const noReply = total - yes - no - stop;
+  const reviewsSent = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE review_sent_at IS NOT NULL").get().count;
+  res.json({ total, yes, no, stop, noReply, reviewsSent });
+});
+
+app.get("/api/charts/time-windows", (req, res) => {
+  const rows = db.prepare(`
+    SELECT time_window, COUNT(*) as count
+    FROM notifications
+    WHERE time_window IS NOT NULL AND time_window != 'TBD'
+    GROUP BY time_window
+    ORDER BY count DESC
+  `).all();
+  res.json(rows);
+});
+
 // ─── Settings API ────────────────────────────────────────
 app.get("/api/settings", (req, res) => {
   const settings = {};
