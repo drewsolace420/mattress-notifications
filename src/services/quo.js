@@ -11,7 +11,7 @@
 
 const fetch = require("node-fetch");
 
-const QUO_BASE_URL = "https://api.quo.com/v1";
+const QUO_BASE_URL = "https://api.openphone.com/v1";
 // Note: Quo's API may use /v1 or /v4 depending on the endpoint.
 // Check your Quo dashboard for the correct version.
 
