@@ -342,25 +342,25 @@
 
       <!-- Charts Row 1: Volume + Response Donut -->
       <div class="grid-2">
-        <div class="panel" style="min-height:320px">
+        <div class="panel">
           <h3>Daily Volume</h3>
-          <canvas id="chart-daily" height="260"></canvas>
+          <div style="position:relative;height:260px"><canvas id="chart-daily"></canvas></div>
         </div>
-        <div class="panel" style="min-height:320px">
+        <div class="panel">
           <h3>Customer Responses</h3>
-          <canvas id="chart-responses" height="260"></canvas>
+          <div style="position:relative;height:260px"><canvas id="chart-responses"></canvas></div>
         </div>
       </div>
 
       <!-- Charts Row 2: Store Breakdown + Time Window -->
       <div class="grid-2">
-        <div class="panel" style="min-height:320px">
+        <div class="panel">
           <h3>Deliveries by Store</h3>
-          <canvas id="chart-stores" height="260"></canvas>
+          <div style="position:relative;height:260px"><canvas id="chart-stores"></canvas></div>
         </div>
-        <div class="panel" style="min-height:320px">
+        <div class="panel">
           <h3>Delivery Time Windows</h3>
-          <canvas id="chart-windows" height="260"></canvas>
+          <div style="position:relative;height:260px"><canvas id="chart-windows"></canvas></div>
         </div>
       </div>
 
@@ -749,14 +749,24 @@
     Chart.defaults.color = '#94a3b8';
     Chart.defaults.borderColor = '#1e293b22';
     Chart.defaults.font.family = "'DM Sans', sans-serif";
+    Chart.defaults.responsive = true;
+    Chart.defaults.maintainAspectRatio = false;
+    Chart.defaults.animation = { duration: 400 };
 
     let dailyChart, responsesChart, storesChart, windowsChart;
 
     function destroyCharts() {
-      [dailyChart, responsesChart, storesChart, windowsChart].forEach(c => { if (c) c.destroy(); });
+      if (dailyChart) { dailyChart.destroy(); dailyChart = null; }
+      if (responsesChart) { responsesChart.destroy(); responsesChart = null; }
+      if (storesChart) { storesChart.destroy(); storesChart = null; }
+      if (windowsChart) { windowsChart.destroy(); windowsChart = null; }
     }
 
     async function loadCharts() {
+      // Only render when reports tab is visible — Chart.js breaks on hidden canvases
+      const reportsTab = document.getElementById('tab-reports');
+      if (reportsTab.style.display === 'none') return;
+
       const days = document.getElementById('chart-days').value;
       try {
         const [dailyRes, responseRes, storeRes, windowRes] = await Promise.all([
