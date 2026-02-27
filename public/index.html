@@ -154,24 +154,74 @@
     <div id="tab-overview">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div>
-          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px">Today's Delivery Notifications</h2>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px" id="overview-title">Today's Deliveries</h2>
           <p style="color:#64748b;font-size:13px;margin-top:4px" id="overview-subtitle">Loading...</p>
         </div>
-        <button class="btn btn-primary" id="send-all-btn" style="display:none" onclick="sendAllPending()">
-          Send All Pending (<span id="pending-badge">0</span>)
-        </button>
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="btn btn-outline" id="toggle-view-btn" onclick="toggleStatsView()" style="font-size:11px">Show All-Time</button>
+          <button class="btn btn-primary" id="send-all-btn" style="display:none" onclick="sendAllPending()">
+            Send All Pending (<span id="pending-badge">0</span>)
+          </button>
+        </div>
       </div>
 
       <div class="stats" id="stats-container">
-        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub">SMS delivered via Quo</div></div>
-        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub">Awaiting send</div></div>
-        <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="stat-failed" style="color:#ef4444">—</div><div class="stat-sub">Needs attention</div></div>
-        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-delivered" style="color:#818cf8">—</div><div class="stat-sub">Delivery complete</div></div>
+        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub" id="sub-sent">SMS delivered today</div></div>
+        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub" id="sub-pending">Awaiting 6 PM send</div></div>
+        <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="stat-failed" style="color:#ef4444">—</div><div class="stat-sub" id="sub-failed">Needs attention</div></div>
+        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-delivered" style="color:#818cf8">—</div><div class="stat-sub" id="sub-delivered">Replied YES</div></div>
+      </div>
+
+      <!-- Tomorrow's Queue + Scheduler -->
+      <div class="grid-2" style="margin-bottom:18px">
+        <div class="panel" style="border-left:3px solid #818cf8">
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>Tomorrow's Queue</span>
+            <span class="mono" id="tomorrow-date" style="font-size:11px;color:#64748b;text-transform:none;letter-spacing:0">—</span>
+          </h3>
+          <div style="display:flex;gap:20px;margin-top:12px">
+            <div>
+              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#818cf8" id="tomorrow-total">0</div>
+              <div style="font-size:11px;color:#64748b;margin-top:2px">Total stops</div>
+            </div>
+            <div>
+              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#fbbf24" id="tomorrow-pending">0</div>
+              <div style="font-size:11px;color:#64748b;margin-top:2px">Pending send</div>
+            </div>
+            <div>
+              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#2dd4bf" id="tomorrow-sent">0</div>
+              <div style="font-size:11px;color:#64748b;margin-top:2px">Already sent</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="border-left:3px solid #2dd4bf">
+          <h3>Scheduler</h3>
+          <div style="margin-top:10px;font-size:13px;line-height:2">
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b">Status</span>
+              <span id="sched-status" style="font-weight:600;color:#2dd4bf">Active</span>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b">Next send</span>
+              <span class="mono" id="sched-next" style="font-size:12px;color:#e2e8f0">—</span>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b">Today</span>
+              <span id="sched-today" style="font-size:12px;color:#e2e8f0">—</span>
+            </div>
+            <div style="margin-top:6px">
+              <button class="btn btn-outline" onclick="triggerManualSend()" style="width:100%;text-align:center;font-size:11px">⚡ Trigger Send Now</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="grid-2">
         <div class="panel">
-          <h3>Recent Activity</h3>
+          <h3 style="display:flex;justify-content:space-between;align-items:center">
+            <span>Recent Activity</span>
+            <span style="font-size:10px;color:#475569;text-transform:none;letter-spacing:0;font-weight:400">Last 24 hours</span>
+          </h3>
           <div id="activity-log">
             <div class="loading">Loading activity...</div>
           </div>
@@ -179,15 +229,18 @@
         <div class="panel">
           <h3>Automation Workflow</h3>
           <div class="workflow">
-            <div class="workflow-step"><div class="icon">📦</div><div class="label">Delivery Scheduled</div><div class="sub">Spoke Dispatch</div></div>
+            <div class="workflow-step"><div class="icon">📦</div><div class="label">Spoke Dispatch</div><div class="sub">Route sent to driver</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">🔗</div><div class="label">Webhook Fires</div><div class="sub">POST /api/spoke/webhook</div></div>
+            <div class="workflow-step"><div class="icon">⚙️</div><div class="label">Process Stop</div><div class="sub">Fetch recipient + ETA</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">⚙️</div><div class="label">Process & Format</div><div class="sub">Railway Server</div></div>
+            <div class="workflow-step"><div class="icon">⏰</div><div class="label">6 PM EST</div><div class="sub">Daily batch send</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">💬</div><div class="label">Send SMS</div><div class="sub">Quo API</div></div>
-            <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">✅</div><div class="label">Customer Notified</div><div class="sub">Confirmation Sent</div></div>
+            <div class="workflow-step"><div class="icon">💬</div><div class="label">SMS via Quo</div><div class="sub">YES / NO reply</div></div>
+          </div>
+          <div style="margin-top:14px;padding:12px;background:#1e293b44;border-radius:8px;font-size:11px;color:#64748b;line-height:1.8">
+            <strong style="color:#94a3b8">Schedule:</strong> Mon–Fri at 6 PM EST → Tue–Sat deliveries<br>
+            <strong style="color:#94a3b8">Windows:</strong> 2-hour blocks, rounded up to nearest :30<br>
+            <strong style="color:#94a3b8">Replies:</strong> YES = confirmed, NO = needs rescheduling
           </div>
         </div>
       </div>
@@ -226,11 +279,12 @@
                 <th>Time Window</th>
                 <th>Product</th>
                 <th>Status</th>
+                <th>Response</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="notifications-table">
-              <tr><td colspan="7" class="loading">Loading notifications...</td></tr>
+              <tr><td colspan="8" class="loading">Loading notifications...</td></tr>
             </tbody>
           </table>
         </div>
@@ -284,6 +338,7 @@
 
   <script>
     const API = '';  // Same origin
+    let showAllTime = false;
 
     // ─── Tab Navigation ────────────────────────
     document.querySelectorAll('nav button').forEach(btn => {
@@ -319,42 +374,102 @@
       return `<span class="badge badge-${status}">${status}</span>`;
     }
 
+    function formatDate(dateStr) {
+      if (!dateStr) return '—';
+      const d = new Date(dateStr + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    // ─── Toggle daily / all-time ────────────────
+    function toggleStatsView() {
+      showAllTime = !showAllTime;
+      document.getElementById('toggle-view-btn').textContent = showAllTime ? 'Show Today' : 'Show All-Time';
+      document.getElementById('overview-title').textContent = showAllTime ? 'All-Time Stats' : "Today's Deliveries";
+      loadStats();
+    }
+
     // ─── Load Stats ────────────────────────────
     async function loadStats() {
       try {
         const res = await fetch(API + '/api/stats');
         const data = await res.json();
-        document.getElementById('stat-sent').textContent = data.sent || 0;
-        document.getElementById('stat-pending').textContent = data.pending || 0;
-        document.getElementById('stat-failed').textContent = data.failed || 0;
-        document.getElementById('stat-delivered').textContent = data.delivered || 0;
 
-        if (data.pending > 0) {
-          document.getElementById('send-all-btn').style.display = '';
-          document.getElementById('pending-badge').textContent = data.pending;
+        // Pick daily or all-time
+        const s = showAllTime ? data.allTime : data.today;
+
+        document.getElementById('stat-sent').textContent = s.sent || 0;
+        document.getElementById('stat-pending').textContent = s.pending || 0;
+        document.getElementById('stat-failed').textContent = s.failed || 0;
+        document.getElementById('stat-delivered').textContent = s.delivered || 0;
+
+        // Subtitles
+        if (showAllTime) {
+          document.getElementById('sub-sent').textContent = 'Total SMS sent';
+          document.getElementById('sub-pending').textContent = 'Awaiting send';
+          document.getElementById('sub-failed').textContent = 'Needs attention';
+          document.getElementById('sub-delivered').textContent = 'Confirmed deliveries';
+        } else {
+          document.getElementById('sub-sent').textContent = 'SMS sent for today';
+          document.getElementById('sub-pending').textContent = 'Awaiting 6 PM send';
+          document.getElementById('sub-failed').textContent = 'Needs attention';
+          document.getElementById('sub-delivered').textContent = 'Replied YES';
         }
 
+        // Show send button if any pending
+        const totalPending = data.today.pending + (data.tomorrow?.pending || 0);
+        if (totalPending > 0) {
+          document.getElementById('send-all-btn').style.display = '';
+          document.getElementById('pending-badge').textContent = totalPending;
+        } else {
+          document.getElementById('send-all-btn').style.display = 'none';
+        }
+
+        // Date subtitle
         const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        document.getElementById('overview-subtitle').textContent = `${today} — Automated via Spoke Dispatch → Quo SMS`;
+        document.getElementById('overview-subtitle').textContent = showAllTime
+          ? `${data.allTime.total} total notifications processed`
+          : `${today} — Automated via Spoke Dispatch → Quo SMS`;
+
+        // Tomorrow's queue
+        const tm = data.tomorrow || {};
+        document.getElementById('tomorrow-date').textContent = formatDate(tm.date);
+        document.getElementById('tomorrow-total').textContent = tm.total || 0;
+        document.getElementById('tomorrow-pending').textContent = tm.pending || 0;
+        document.getElementById('tomorrow-sent').textContent = tm.sent || 0;
+
+        // Scheduler
+        const sched = data.scheduler || {};
+        document.getElementById('sched-status').textContent = sched.todayIsSendDay ? 'Active — Send Day' : 'Paused — Weekend';
+        document.getElementById('sched-status').style.color = sched.todayIsSendDay ? '#2dd4bf' : '#fbbf24';
+        document.getElementById('sched-next').textContent = sched.nextSendDay ? `${sched.nextSendDay} 6:00 PM` : '—';
+        document.getElementById('sched-today').textContent = sched.todayName || '—';
+
       } catch (e) {
         console.error('Failed to load stats:', e);
       }
     }
 
-    // ─── Load Activity Log ─────────────────────
+    // ─── Load Activity Log (last 24 hours) ─────
     async function loadActivity() {
       try {
-        const res = await fetch(API + '/api/activity?limit=10');
+        const res = await fetch(API + '/api/activity?limit=20&hours=24');
         const logs = await res.json();
         const container = document.getElementById('activity-log');
 
         if (logs.length === 0) {
-          container.innerHTML = '<div class="empty">No activity yet — waiting for Spoke Dispatch webhooks</div>';
+          container.innerHTML = '<div class="empty">No activity in the last 24 hours</div>';
           return;
         }
 
         container.innerHTML = logs.map(log => {
-          const dotColor = log.type.includes('sent') ? '#2dd4bf' : log.type.includes('fail') ? '#ef4444' : log.type.includes('webhook') || log.type.includes('import') ? '#818cf8' : '#475569';
+          const dotColor =
+            log.type.includes('sent') ? '#2dd4bf' :
+            log.type.includes('fail') ? '#ef4444' :
+            log.type.includes('confirm') ? '#818cf8' :
+            log.type.includes('decline') ? '#fbbf24' :
+            log.type.includes('import') ? '#818cf8' :
+            log.type.includes('scheduler') ? '#2dd4bf' :
+            '#475569';
           const time = new Date(log.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
           return `<div class="log-entry">
             <div class="log-dot" style="background:${dotColor}"></div>
@@ -372,6 +487,17 @@
       }
     }
 
+    // ─── Manual Send Trigger ────────────────────
+    async function triggerManualSend() {
+      try {
+        const res = await fetch(API + '/api/scheduler/send-now', { method: 'POST' });
+        const data = await res.json();
+        showToast(`Manual send: ${data.sent || 0} sent, ${data.failed || 0} failed`);
+        loadStats();
+        loadActivity();
+      } catch (e) { showToast('Failed to trigger send'); }
+    }
+
     // ─── Load Notifications ────────────────────
     async function loadNotifications() {
       const store = document.getElementById('filter-store').value;
@@ -386,11 +512,16 @@
         const tbody = document.getElementById('notifications-table');
 
         if (data.notifications.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="7" class="empty">No notifications match your filters</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="8" class="empty">No notifications match your filters</td></tr>';
           return;
         }
 
-        tbody.innerHTML = data.notifications.map(n => `<tr>
+        tbody.innerHTML = data.notifications.map(n => {
+          const responseDisplay = n.customer_response === 'yes' ? '<span style="color:#2dd4bf;font-weight:600">✓ YES</span>'
+            : n.customer_response === 'no' ? '<span style="color:#ef4444;font-weight:600">✗ NO</span>'
+            : n.customer_response === 'stop' ? '<span style="color:#64748b;font-weight:600">STOP</span>'
+            : '<span style="color:#475569">—</span>';
+          return `<tr>
           <td>
             <div style="font-weight:600">${n.customer_name}</div>
             <div class="mono" style="font-size:11px;color:#64748b">${n.phone}</div>
@@ -400,11 +531,12 @@
           <td style="color:#94a3b8">${n.time_window || '—'}</td>
           <td style="color:#94a3b8;font-size:12px">${n.product || '—'}</td>
           <td>${badge(n.status)}</td>
+          <td>${responseDisplay}</td>
           <td>
             ${n.status === 'failed' ? `<button class="btn btn-danger" onclick="retrySend(${n.id})">Retry</button>` : ''}
             ${n.status === 'pending' ? `<button class="btn btn-outline" onclick="sendOne(${n.id})">Send</button>` : ''}
           </td>
-        </tr>`).join('');
+        </tr>`}).join('');
       } catch (e) {
         console.error('Failed to load notifications:', e);
       }
