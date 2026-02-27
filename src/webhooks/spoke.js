@@ -68,23 +68,32 @@ function resolveStoreFromSaleNumber(saleNumber) {
 
 /**
  * Extract Sale Number from Spoke custom properties.
- * Custom properties can come as:
- *   - { "Sale Number": "10221010" }
- *   - { "sale_number": "10221010" }
- *   - null
+ * Spoke uses UUIDs as keys, not display names. Example:
+ *   { "4a43ff9b-475d-4c55-985d-e852ae2b0dfa": "20162800" }
+ * Since Sale Number is the only custom property, grab the first value.
  */
 function extractSaleNumber(customProperties) {
   if (!customProperties) return null;
-  // Try common key variations
-  return (
+
+  // Try known display name keys first
+  const byName =
     customProperties["Sale Number"] ||
     customProperties["sale_number"] ||
     customProperties["saleNumber"] ||
     customProperties["Sale number"] ||
     customProperties["sale number"] ||
     customProperties["SaleNumber"] ||
-    null
-  );
+    null;
+  if (byName) return byName;
+
+  // Spoke uses UUID keys — grab the first value
+  const values = Object.values(customProperties);
+  if (values.length > 0) {
+    console.log("[Spoke] Extracted sale number from UUID key:", values[0]);
+    return values[0];
+  }
+
+  return null;
 }
 
 /**
