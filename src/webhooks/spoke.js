@@ -417,10 +417,12 @@ async function processDeliveryComplete(webhookData) {
     notification = db.prepare("SELECT * FROM notifications WHERE spoke_stop_id = ?").get(stopId);
   }
 
-  if (!notification) {
-    console.log("[Spoke] No matching notification for completed stop — trying API lookup");
+  // ─── Fetch full stop from API (needed for fallback or phone lookup) ───
+  let fullStop = null;
+  if (!notification && stopId) {
+    console.log("[Spoke] No matching notification — fetching from Spoke API for direct review send");
+    fullStop = await spokeApiFetch(stopId);
 
-    const fullStop = stopId ? await spokeApiFetch(stopId) : null;
     if (fullStop?.recipient?.phone) {
       const cleanedPhone = cleanPhone(fullStop.recipient.phone);
       notification = db.prepare(
@@ -429,8 +431,61 @@ async function processDeliveryComplete(webhookData) {
     }
   }
 
+  // ─── If STILL no notification, send review directly from API data ───
+  if (!notification && fullStop) {
+    const recipient = fullStop.recipient || {};
+    const phone = recipient.phone || recipient.phoneNumber || null;
+    const customerName = recipient.name || "Customer";
+
+    if (!phone) {
+      console.log("[Spoke] No phone number in API data — cannot send review");
+      return;
+    }
+
+    // Resolve store from sale number
+    const saleNumber = extractSaleNumber(fullStop.customProperties);
+    const store = resolveStoreFromSaleNumber(saleNumber);
+    console.log("[Spoke] Direct review — Customer:", customerName, "| Sale#:", saleNumber, "→ Store:", store);
+
+    if (store === "other") {
+      console.log("[Spoke] Store is 'other' (sale prefix 1) — skipping review");
+      logActivity("delivery_complete", `Delivery complete for ${customerName} — no review (store: other)`);
+      return;
+    }
+
+    if (store === "unknown") {
+      console.log("[Spoke] Store unknown — skipping review");
+      logActivity("delivery_complete", `Delivery complete for ${customerName} — no review (unknown store)`);
+      return;
+    }
+
+    const reviewLink = STORE_REVIEW_LINKS[store] || null;
+    const storeName = STORE_DISPLAY_NAMES[store] || "Mattress Overstock";
+
+    let message;
+    if (reviewLink) {
+      message =
+        `Your mattress has been delivered! Thank you for choosing ${storeName}. ` +
+        `We'd love your feedback — tap here to leave a quick review:\n${reviewLink}`;
+    } else {
+      message =
+        `Your mattress has been delivered! Thank you for choosing Mattress Overstock. ` +
+        `We appreciate your business!`;
+    }
+
+    try {
+      await sendSms(cleanPhone(phone), message);
+      console.log(`[Spoke] ✓ Direct review request sent to ${customerName} (${store})`);
+      logActivity("review_request_sent", `Google review request sent to ${customerName} → ${storeName} (no prior notification)`);
+    } catch (err) {
+      console.error("[Spoke] Failed to send direct review:", err.message);
+      logActivity("review_request_failed", `Failed direct review for ${customerName}: ${err.message}`);
+    }
+    return;
+  }
+
   if (!notification) {
-    console.log("[Spoke] Could not match delivery completion to a notification — skipping");
+    console.log("[Spoke] Could not match delivery completion to any data — skipping");
     return;
   }
 
