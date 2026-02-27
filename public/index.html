@@ -217,7 +217,8 @@
             </div>
             <div style="display:flex;gap:8px;margin-top:6px">
               <button class="btn btn-outline" onclick="triggerManualSend()" style="flex:1;text-align:center;font-size:11px">⚡ Send Now</button>
-              <button class="btn btn-outline" onclick="triggerStaffSummary()" style="flex:1;text-align:center;font-size:11px">📋 Summary Now</button>
+              <button class="btn btn-outline" onclick="triggerStaffSummary()" style="flex:1;text-align:center;font-size:11px">📋 Summary</button>
+              <button class="btn btn-outline" id="sync-btn" onclick="triggerSync()" style="flex:1;text-align:center;font-size:11px">🔄 Sync Routes</button>
             </div>
           </div>
         </div>
@@ -601,6 +602,26 @@
         showToast('Staff summary sent');
         loadActivity();
       } catch (e) { showToast('Failed to send summary'); }
+    }
+
+    // ─── Sync Routes from Spoke ─────────────────
+    async function triggerSync() {
+      const btn = document.getElementById('sync-btn');
+      btn.textContent = '⏳ Syncing...';
+      btn.disabled = true;
+      try {
+        const res = await fetch(API + '/api/sync', { method: 'POST' });
+        const data = await res.json();
+        const msg = `${data.newStops || 0} new, ${data.updated || 0} updated`;
+        showToast('Sync complete — ' + msg);
+        loadStats();
+        loadActivity();
+      } catch (e) {
+        showToast('Sync failed');
+      } finally {
+        btn.textContent = '🔄 Sync Routes';
+        btn.disabled = false;
+      }
     }
 
     // ─── Load Notifications ────────────────────
