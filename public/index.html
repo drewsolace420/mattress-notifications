@@ -259,11 +259,13 @@
         <div style="display:flex;gap:10px">
           <select id="filter-store" onchange="loadNotifications()">
             <option value="">All Stores</option>
-            <option value="richmond">Richmond</option>
             <option value="somerset">Somerset</option>
-            <option value="laurel">Laurel County</option>
+            <option value="lexington">Nicholasville Rd</option>
             <option value="london">London</option>
+            <option value="georgetown">Georgetown</option>
+            <option value="richmond">Richmond</option>
             <option value="winchester">Winchester</option>
+            <option value="laurel">Laurel County</option>
           </select>
           <select id="filter-status" onchange="loadNotifications()">
             <option value="">All Status</option>
@@ -367,8 +369,8 @@
     }
 
     // ─── Store colors ──────────────────────────
-    const storeColors = { richmond: '#2dd4bf', somerset: '#818cf8', laurel: '#fb923c', london: '#f472b6', winchester: '#a3e635' };
-    const storeNames = { richmond: 'Richmond', somerset: 'Somerset', laurel: 'Laurel County', london: 'London', winchester: 'Winchester' };
+    const storeColors = { richmond: '#2dd4bf', somerset: '#818cf8', laurel: '#fb923c', london: '#f472b6', winchester: '#a3e635', georgetown: '#38bdf8', lexington: '#c084fc' };
+    const storeNames = { richmond: 'Richmond', somerset: 'Somerset', laurel: 'Laurel County', london: 'London', winchester: 'Winchester', georgetown: 'Georgetown', lexington: 'Nicholasville Rd' };
 
     function storeDot(store) {
       const c = storeColors[store] || '#64748b';
