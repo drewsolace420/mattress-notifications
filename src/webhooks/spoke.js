@@ -420,15 +420,6 @@ async function processDeliveryComplete(webhookData) {
     return;
   }
 
-  // Only send review if delivery was explicitly marked as succeeded
-  // This filters out "next in queue" events that Spoke mislabels as stop.attempted_delivery
-  if (!succeeded) {
-    console.log("[Spoke] ⚠ succeeded is not true — skipping review. This may be a 'next in queue' event.");
-    console.log("[Spoke] deliveryInfo was:", JSON.stringify(webhookData.deliveryInfo));
-    logActivity("delivery_skipped", `Skipped review for stop ${stopId} — succeeded not true`);
-    return;
-  }
-
   // ─── Find matching notification in our database ───
   let notification = null;
   if (stopId) {
