@@ -10,7 +10,7 @@
  *
  * FLOW:
  *   1. GET /teams → discover team ID (cached)
- *   2. GET /teams/{teamId}/plans → get today's + tomorrow's plans
+ *   2. Get plan IDs from DB notifications for tomorrow's deliveries
  *   3. For each plan → GET /plans/{planId}/stops → all stops
  *   4. For each delivery stop:
  *      - Not in DB → import as pending notification
@@ -139,34 +139,20 @@ async function spokeGet(path) {
  * and spoke_route_id values — extract unique plan IDs from these.
  * Also tries to list plans directly from the API.
  */
-async function getActivePlanIds(today, tomorrowStr) {
+async function getActivePlanIds(deliveryDate) {
   const planIds = new Set();
 
-  // 1. Extract from existing notifications in DB
+  // 1. Extract from existing notifications in DB for this delivery date
   const rows = db.prepare(
     `SELECT DISTINCT spoke_stop_id FROM notifications
-     WHERE scheduled_date IN (?, ?)
+     WHERE scheduled_date = ?
      AND spoke_stop_id IS NOT NULL`
-  ).all(today, tomorrowStr);
+  ).all(deliveryDate);
 
   for (const row of rows) {
     // spoke_stop_id looks like "plans/chi2dVu4hiCIdgp9D5AI/stops/xyz789"
     const match = row.spoke_stop_id.match(/^(plans\/[^/]+)/);
     if (match) planIds.add(match[1]);
-  }
-
-  // 2. Try listing plans directly from API
-  const directPlans = await spokeGet("plans");
-  if (Array.isArray(directPlans)) {
-    for (const p of directPlans) {
-      const pid = p.id || p;
-      if (typeof pid === "string" && pid.startsWith("plans/")) planIds.add(pid);
-    }
-  } else if (directPlans?.plans && Array.isArray(directPlans.plans)) {
-    for (const p of directPlans.plans) {
-      const pid = p.id || p;
-      if (typeof pid === "string" && pid.startsWith("plans/")) planIds.add(pid);
-    }
   }
 
   console.log(`[Sync] Discovered ${planIds.size} plan(s):`, [...planIds]);
@@ -195,19 +181,24 @@ async function getPlanDetails(planId) {
 
 async function syncRoutes() {
   const now = getESTNow();
-  const today = now.toISOString().split("T")[0];
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split("T")[0];
 
+  // Only sync if tomorrow is a delivery day (Tue–Sat)
+  if (!isDeliveryDay(tomorrow)) {
+    console.log(`[Sync] ${tomorrowStr} is not a delivery day — skipping`);
+    return { newStops: 0, updated: 0, removed: 0, skipped: 0, errors: [] };
+  }
+
   console.log("\n[Sync] ═══════════════════════════════════════");
   console.log(`[Sync] Route sync started at ${now.toLocaleTimeString()}`);
-  console.log(`[Sync] Checking plans for ${today} and ${tomorrowStr}`);
+  console.log(`[Sync] Syncing routes for: ${tomorrowStr}`);
 
   const results = { newStops: 0, updated: 0, removed: 0, skipped: 0, errors: [] };
 
   try {
-    const planIds = await getActivePlanIds(today, tomorrowStr);
+    const planIds = await getActivePlanIds(tomorrowStr);
     console.log(`[Sync] Found ${planIds.length} plan(s)`);
 
     // Collect ALL stop IDs currently in Spoke across all plans
@@ -262,14 +253,14 @@ async function syncRoutes() {
     }
 
     // ─── Detect removed stops ───────────────────────────
-    // Find notifications for today/tomorrow whose spoke_stop_id is NOT in Spoke anymore
+    // Find notifications for tomorrow whose spoke_stop_id is NOT in Spoke anymore
     if (allSpokeStopIds.size > 0) {
       const dbNotifications = db.prepare(
         `SELECT id, customer_name, spoke_stop_id, status FROM notifications
-         WHERE scheduled_date IN (?, ?)
+         WHERE scheduled_date = ?
          AND spoke_stop_id IS NOT NULL
          AND status IN ('pending', 'sent')`
-      ).all(today, tomorrowStr);
+      ).all(tomorrowStr);
 
       for (const n of dbNotifications) {
         if (!allSpokeStopIds.has(n.spoke_stop_id)) {
