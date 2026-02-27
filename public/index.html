@@ -202,15 +202,20 @@
               <span id="sched-status" style="font-weight:600;color:#2dd4bf">Active</span>
             </div>
             <div style="display:flex;justify-content:space-between">
-              <span style="color:#64748b">Next send</span>
+              <span style="color:#64748b">Customer SMS</span>
               <span class="mono" id="sched-next" style="font-size:12px;color:#e2e8f0">—</span>
+            </div>
+            <div style="display:flex;justify-content:space-between">
+              <span style="color:#64748b">Staff summary</span>
+              <span class="mono" id="sched-summary" style="font-size:12px;color:#e2e8f0">9:00 PM EST</span>
             </div>
             <div style="display:flex;justify-content:space-between">
               <span style="color:#64748b">Today</span>
               <span id="sched-today" style="font-size:12px;color:#e2e8f0">—</span>
             </div>
-            <div style="margin-top:6px">
-              <button class="btn btn-outline" onclick="triggerManualSend()" style="width:100%;text-align:center;font-size:11px">⚡ Trigger Send Now</button>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-outline" onclick="triggerManualSend()" style="flex:1;text-align:center;font-size:11px">⚡ Send Now</button>
+              <button class="btn btn-outline" onclick="triggerStaffSummary()" style="flex:1;text-align:center;font-size:11px">📋 Summary Now</button>
             </div>
           </div>
         </div>
@@ -238,7 +243,8 @@
             <div class="workflow-step"><div class="icon">💬</div><div class="label">SMS via Quo</div><div class="sub">YES / NO reply</div></div>
           </div>
           <div style="margin-top:14px;padding:12px;background:#1e293b44;border-radius:8px;font-size:11px;color:#64748b;line-height:1.8">
-            <strong style="color:#94a3b8">Schedule:</strong> Mon–Fri at 6 PM EST → Tue–Sat deliveries<br>
+            <strong style="color:#94a3b8">6 PM:</strong> Customer texts sent Mon–Fri for next-day deliveries<br>
+            <strong style="color:#94a3b8">9 PM:</strong> Staff summary sent to scheduling team<br>
             <strong style="color:#94a3b8">Windows:</strong> 2-hour blocks, rounded up to nearest :30<br>
             <strong style="color:#94a3b8">Replies:</strong> YES = confirmed, NO = needs rescheduling
           </div>
@@ -496,6 +502,16 @@
         loadStats();
         loadActivity();
       } catch (e) { showToast('Failed to trigger send'); }
+    }
+
+    // ─── Staff Summary Trigger ──────────────────
+    async function triggerStaffSummary() {
+      try {
+        const res = await fetch(API + '/api/scheduler/summary-now', { method: 'POST' });
+        const data = await res.json();
+        showToast('Staff summary sent');
+        loadActivity();
+      } catch (e) { showToast('Failed to send summary'); }
     }
 
     // ─── Load Notifications ────────────────────
