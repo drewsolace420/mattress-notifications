@@ -8,6 +8,8 @@ const { handleSpokeWebhook } = require("./webhooks/spoke");
 const { sendSms, getQuoStatus } = require("./services/quo");
 const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates");
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
+const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
+const { processRescheduleMessage, startReschedule, completeReschedule } = require("./services/rescheduler");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -392,7 +394,7 @@ app.get("/api/connections", async (req, res) => {
   });
 });
 
-// ─── Quo Reply Webhook (YES/NO responses) ────────────────
+// ─── Quo Reply Webhook (YES/NO/rescheduling responses) ───
 // Configure in Quo: Webhooks → message.received
 // URL: https://your-app.up.railway.app/api/quo/webhook
 app.post("/api/quo/webhook", async (req, res) => {
@@ -406,9 +408,10 @@ app.post("/api/quo/webhook", async (req, res) => {
     if (type === "message.received" || event.data?.object?.direction === "incoming") {
       const message = event.data?.object || event.data || {};
       const from = message.from || message.identifier || "";
-      const body = (message.text || message.body || message.content || "").trim().toUpperCase();
+      const rawBody = (message.text || message.body || message.content || "").trim();
+      const body = rawBody.toUpperCase();
 
-      if (!from || !body) {
+      if (!from || !rawBody) {
         return res.status(200).json({ received: true });
       }
 
@@ -417,13 +420,46 @@ app.post("/api/quo/webhook", async (req, res) => {
       if (cleanFrom.length === 10) cleanFrom = "+1" + cleanFrom;
       if (cleanFrom.length === 11 && cleanFrom.startsWith("1")) cleanFrom = "+" + cleanFrom;
 
-      // Find the most recent notification for this phone number
+      // ─── Check if this customer is mid-rescheduling ───
+      const reschedulingNotif = db.prepare(
+        "SELECT * FROM notifications WHERE phone = ? AND conversation_state = 'rescheduling' ORDER BY updated_at DESC LIMIT 1"
+      ).get(cleanFrom);
+
+      if (reschedulingNotif) {
+        console.log(`[Quo Webhook] ${reschedulingNotif.customer_name} is rescheduling — routing to Claude`);
+
+        // Handle STOP even during rescheduling
+        if (body === "STOP") {
+          db.prepare("UPDATE notifications SET customer_response = 'stop', conversation_state = 'none', updated_at = ? WHERE id = ?")
+            .run(new Date().toISOString(), reschedulingNotif.id);
+          logActivity("customer_optout", `${reschedulingNotif.customer_name} opted out during rescheduling (STOP)`, reschedulingNotif.id);
+          try {
+            await sendSms(cleanFrom, "You've been opted out of delivery notifications from Mattress Overstock. Thank you!");
+          } catch (e) { console.error("[Quo Webhook] Failed to send STOP reply:", e.message); }
+          return res.status(200).json({ received: true });
+        }
+
+        // Process through Claude
+        const result = await handleRescheduleMessage(reschedulingNotif, rawBody);
+
+        // Send Claude's reply
+        try {
+          await sendSms(cleanFrom, result.reply);
+          console.log(`[Quo Webhook] Reschedule reply sent to ${reschedulingNotif.customer_name}: ${result.reply.substring(0, 80)}...`);
+        } catch (e) {
+          console.error("[Quo Webhook] Failed to send reschedule reply:", e.message);
+        }
+
+        return res.status(200).json({ received: true });
+      }
+
+      // ─── Normal YES/NO/STOP flow ───
       const notification = db.prepare(
         "SELECT * FROM notifications WHERE phone = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1"
       ).get(cleanFrom);
 
       if (!notification) {
-        console.log(`[Quo Webhook] No matching sent notification for ${cleanFrom.substring(0, 6)}****`);
+        console.log(`[Quo Webhook] No matching notification for ${cleanFrom.substring(0, 6)}****`);
         return res.status(200).json({ received: true });
       }
 
@@ -448,16 +484,8 @@ app.post("/api/quo/webhook", async (req, res) => {
           "UPDATE notifications SET customer_response = 'no', response_at = ?, updated_at = ? WHERE id = ?"
         ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
 
-        logActivity("customer_declined", `${notification.customer_name} replied NO — needs rescheduling`, notification.id);
-        console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO) — needs follow-up`);
-
-        // Auto-reply reschedule notice
-        try {
-          await sendSms(cleanFrom, `No problem! A member of our team will text you tomorrow after 10 AM to reschedule your delivery. Thank you!`);
-          logActivity("auto_reply_sent", `Reschedule reply sent to ${notification.customer_name}`, notification.id);
-        } catch (e) {
-          console.error("[Quo Webhook] Failed to send NO auto-reply:", e.message);
-        }
+        logActivity("customer_declined", `${notification.customer_name} replied NO — starting reschedule`, notification.id);
+        console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO) — starting reschedule`);
 
         // Flag stop in Spoke so driver sees it
         if (notification.spoke_stop_id) {
@@ -466,6 +494,9 @@ app.post("/api/quo/webhook", async (req, res) => {
             logActivity("spoke_stop_flagged", `Flagged stop in Spoke for ${notification.customer_name}`, notification.id);
           }
         }
+
+        // Start AI-powered reschedule conversation
+        await startRescheduleConversation(notification);
 
       } else if (body === "STOP") {
         db.prepare(
