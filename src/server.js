@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const fetch = require("node-fetch");
 const db = require("./database");
 const { handleSpokeWebhook } = require("./webhooks/spoke");
 const { sendSms, getQuoStatus } = require("./services/quo");
@@ -10,6 +11,57 @@ const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatu
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ─── Spoke API helper ────────────────────────────────────
+async function updateSpokeStopNotes(stopId, notes) {
+  const apiKey = process.env.SPOKE_API_KEY;
+  if (!apiKey || !stopId) return false;
+
+  // Try standard PATCH first
+  try {
+    const res = await fetch(`https://api.getcircuit.com/public/v0.2b/${stopId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ notes }),
+    });
+    if (res.ok) {
+      console.log("[Spoke API] Updated stop notes via standard PATCH:", stopId);
+      return true;
+    }
+    const errText = await res.text();
+    console.log("[Spoke API] Standard PATCH failed:", res.status, errText.substring(0, 200));
+  } catch (e) {
+    console.log("[Spoke API] Standard PATCH error:", e.message);
+  }
+
+  // Fallback: Live Stops API (for already-distributed routes)
+  try {
+    // stopId is like "plans/abc123/stops/xyz789" — extract planId and stopId
+    const match = stopId.match(/plans\/([^/]+)\/stops\/([^/]+)/);
+    if (!match) {
+      console.error("[Spoke API] Cannot parse stop ID for live stops:", stopId);
+      return false;
+    }
+    const [, planId, stopSubId] = match;
+    const liveUrl = `https://api.getcircuit.com/public/v0.2b/plans/${planId}/liveStops/${stopSubId}`;
+    console.log("[Spoke API] Trying Live Stops API:", liveUrl);
+
+    const res = await fetch(liveUrl, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ notes }),
+    });
+    if (res.ok) {
+      console.log("[Spoke API] Updated stop notes via Live Stops API:", stopId);
+      return true;
+    }
+    console.error("[Spoke API] Live Stops PATCH also failed:", res.status, (await res.text()).substring(0, 200));
+    return false;
+  } catch (e) {
+    console.error("[Spoke API] Live Stops error:", e.message);
+    return false;
+  }
+}
 
 // ─── Middleware ───────────────────────────────────────────
 app.use(cors());
@@ -405,6 +457,14 @@ app.post("/api/quo/webhook", async (req, res) => {
           logActivity("auto_reply_sent", `Reschedule reply sent to ${notification.customer_name}`, notification.id);
         } catch (e) {
           console.error("[Quo Webhook] Failed to send NO auto-reply:", e.message);
+        }
+
+        // Flag stop in Spoke so driver sees it
+        if (notification.spoke_stop_id) {
+          const updated = await updateSpokeStopNotes(notification.spoke_stop_id, "⚠️ CUSTOMER DECLINED");
+          if (updated) {
+            logActivity("spoke_stop_flagged", `Flagged stop in Spoke for ${notification.customer_name}`, notification.id);
+          }
         }
 
       } else if (body === "STOP") {
