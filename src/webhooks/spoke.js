@@ -136,6 +136,13 @@ async function processSpokeStop(webhookData) {
   const stopId = webhookData.id; // e.g., "plans/abc123/stops/xyz789"
   console.log("[Spoke] Processing stop.allocated:", stopId);
 
+  // ─── Skip depot start/end stops ───
+  const stopType = webhookData.type;
+  if (stopType === "start" || stopType === "end") {
+    console.log(`[Spoke] Skipping depot stop (type: ${stopType})`);
+    return;
+  }
+
   // ─── Fetch full stop from REST API (has recipient info) ───
   let fullStop = null;
   if (stopId) {
