@@ -23,8 +23,8 @@
  */
 
 const db = require("../database");
-const { sendSms } = require("./quo");
-const { getSmsBody, computeDeliveryWindow, isSendDay, isDeliveryDay } = require("./templates");
+const { sendSms } = require("../services/quo");
+const { getSmsBody, computeDeliveryWindow, isSendDay, isDeliveryDay } = require("../services/templates");
 const fetch = require("node-fetch");
 
 const SPOKE_API_BASE = "https://api.getcircuit.com/public/v0.2b";
