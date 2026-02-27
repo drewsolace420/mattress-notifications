@@ -84,6 +84,16 @@ app.get("/api/notifications/:id", (req, res) => {
   res.json(notification);
 });
 
+// Delete a notification
+app.delete("/api/notifications/:id", (req, res) => {
+  const notification = db.prepare("SELECT * FROM notifications WHERE id = ?").get(req.params.id);
+  if (!notification) return res.status(404).json({ error: "Not found" });
+  db.prepare("DELETE FROM notifications WHERE id = ?").run(req.params.id);
+  db.prepare("DELETE FROM activity_log WHERE notification_id = ?").run(req.params.id);
+  logActivity("notification_deleted", `Deleted: ${notification.customer_name} — ${notification.scheduled_date} ${notification.time_window}`);
+  res.json({ success: true, deleted: notification.id });
+});
+
 // Manually send (or retry) an SMS for a notification
 app.post("/api/notifications/:id/send", async (req, res) => {
   const notification = db.prepare("SELECT * FROM notifications WHERE id = ?").get(req.params.id);
