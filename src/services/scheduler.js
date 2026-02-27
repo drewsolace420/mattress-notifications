@@ -1,119 +1,113 @@
-require("dotenv").config();
-const express = require("express");
-const cors = require("cors");
-const path = require("path");
-const db = require("./database");
-const { handleSpokeWebhook } = require("./webhooks/spoke");
-const { sendSms, getQuoStatus } = require("./services/quo");
-const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates");
-const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
+/**
+ * Daily Scheduler
+ *
+ * TWO SCHEDULED EVENTS:
+ *
+ * 1) 6:00 PM EST (Mon–Fri) — Customer SMS
+ *    Sends delivery confirmation texts for tomorrow's stops.
+ *
+ * 2) 9:00 PM EST (Mon–Fri) — Staff Summary
+ *    Sends a summary text to the scheduling staff member with:
+ *    - Confirmed stops (replied YES)
+ *    - Declined stops (replied NO)
+ *    - No-reply stops (sent but no response)
+ *    - Pending stops (not yet sent, if any)
+ *
+ * SCHEDULE:
+ *   Monday    → Tuesday deliveries
+ *   Tuesday   → Wednesday deliveries
+ *   Wednesday → Thursday deliveries
+ *   Thursday  → Friday deliveries
+ *   Friday    → Saturday deliveries
+ *   Saturday  → NO SEND
+ *   Sunday    → NO SEND
+ */
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const db = require("../database");
+const { sendSms } = require("./quo");
+const { getSmsBody, isSendDay } = require("./templates");
 
-// ─── Middleware ───────────────────────────────────────────
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, "../public")));
+const SEND_HOUR = 18; // 6 PM — customer texts
+const SEND_MINUTE = 0;
+const SUMMARY_HOUR = 21; // 9 PM — staff summary
+const SUMMARY_MINUTE = 0;
+const CHECK_INTERVAL_MS = 60 * 1000; // check every minute
 
-// ─── Health Check ────────────────────────────────────────
-app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-    services: {
-      spoke: process.env.SPOKE_API_KEY ? "configured" : "missing",
-      quo: process.env.QUO_API_KEY ? "configured" : "missing",
-    },
-  });
-});
+const STAFF_PHONE = "+18593336243";
 
-// ─── Spoke Dispatch Webhook Endpoint ─────────────────────
-// Configure this URL in Spoke Dispatch: Settings > Integrations > Webhooks
-// URL: https://your-app.up.railway.app/api/spoke/webhook
-app.post("/api/spoke/webhook", async (req, res) => {
-  console.log("[Webhook] Received Spoke Dispatch event:", JSON.stringify(req.body).substring(0, 200));
+let lastSendDate = null;    // prevent double customer sends
+let lastSummaryDate = null; // prevent double summary sends
 
-  try {
-    const result = await handleSpokeWebhook(req.body, req.headers);
-    res.status(200).json({ received: true, processed: result.processed });
-  } catch (err) {
-    console.error("[Webhook] Error processing:", err.message);
-    // Always return 200 to prevent Spoke from retrying
-    res.status(200).json({ received: true, error: err.message });
+/**
+ * Get current time in EST/EDT
+ */
+function getESTNow() {
+  return new Date(
+    new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
+  );
+}
+
+/**
+ * Check if it's time to send customer texts (6 PM EST on a weekday)
+ */
+function shouldSendNow() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
+
+  if (lastSendDate === today) return false;
+  if (!isSendDay(now)) return false;
+  if (now.getHours() === SEND_HOUR && now.getMinutes() >= SEND_MINUTE) {
+    return true;
   }
-});
+  return false;
+}
 
-// ─── Notifications API ───────────────────────────────────
+/**
+ * Check if it's time to send the staff summary (9 PM EST on a weekday)
+ */
+function shouldSendSummary() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
 
-// List all notifications (with optional filters)
-app.get("/api/notifications", (req, res) => {
-  const { store, status, date, limit = 50, offset = 0 } = req.query;
-  let query = "SELECT * FROM notifications WHERE 1=1";
-  const params = [];
-
-  if (store) {
-    query += " AND store = ?";
-    params.push(store);
+  if (lastSummaryDate === today) return false;
+  if (!isSendDay(now)) return false;
+  if (now.getHours() === SUMMARY_HOUR && now.getMinutes() >= SUMMARY_MINUTE) {
+    return true;
   }
-  if (status) {
-    query += " AND status = ?";
-    params.push(status);
+  return false;
+}
+
+/**
+ * Execute the daily send batch.
+ * Finds all pending notifications for tomorrow and sends them.
+ */
+async function executeDailySend() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
+
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split("T")[0];
+
+  console.log(`\n[Scheduler] ═══════════════════════════════════════`);
+  console.log(`[Scheduler] Daily send triggered at 6 PM EST`);
+  console.log(`[Scheduler] Sending for deliveries on: ${tomorrowStr}`);
+
+  const pending = db
+    .prepare(
+      "SELECT * FROM notifications WHERE status = 'pending' AND scheduled_date = ?"
+    )
+    .all(tomorrowStr);
+
+  if (pending.length === 0) {
+    console.log(`[Scheduler] No pending notifications for ${tomorrowStr}`);
+    logActivity("scheduler_run", `Daily send — no pending notifications for ${tomorrowStr}`);
+    lastSendDate = today;
+    return { sent: 0, failed: 0 };
   }
-  if (date) {
-    query += " AND scheduled_date = ?";
-    params.push(date);
-  }
 
-  query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
-  params.push(Number(limit), Number(offset));
+  console.log(`[Scheduler] Found ${pending.length} notifications to send`);
 
-  const notifications = db.prepare(query).all(...params);
-  const total = db
-    .prepare(query.replace(/SELECT \*/, "SELECT COUNT(*) as count").replace(/ORDER BY.*/, ""))
-    .get(...params.slice(0, -2));
-
-  res.json({ notifications, total: total.count });
-});
-
-// Get a single notification
-app.get("/api/notifications/:id", (req, res) => {
-  const notification = db.prepare("SELECT * FROM notifications WHERE id = ?").get(req.params.id);
-  if (!notification) return res.status(404).json({ error: "Not found" });
-  res.json(notification);
-});
-
-// Manually send (or retry) an SMS for a notification
-app.post("/api/notifications/:id/send", async (req, res) => {
-  const notification = db.prepare("SELECT * FROM notifications WHERE id = ?").get(req.params.id);
-  if (!notification) return res.status(404).json({ error: "Not found" });
-
-  try {
-    const smsBody = getSmsBody(notification);
-    const result = await sendSms(notification.phone, smsBody);
-
-    db.prepare(
-      "UPDATE notifications SET status = ?, sent_at = ?, quo_message_id = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?"
-    ).run("sent", new Date().toISOString(), result.messageId || null, new Date().toISOString(), notification.id);
-
-    logActivity("sms_sent", `SMS sent to ${notification.customer_name}`, notification.id);
-    res.json({ success: true, messageId: result.messageId });
-  } catch (err) {
-    db.prepare("UPDATE notifications SET status = ?, error_message = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?").run(
-      "failed",
-      err.message,
-      new Date().toISOString(),
-      notification.id
-    );
-    logActivity("sms_failed", `SMS failed for ${notification.customer_name}: ${err.message}`, notification.id);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Send all pending notifications
-app.post("/api/notifications/actions/send-all-pending", async (req, res) => {
-  const pending = db.prepare("SELECT * FROM notifications WHERE status = 'pending'").all();
   const results = { sent: 0, failed: 0, errors: [] };
 
   for (const notification of pending) {
@@ -122,283 +116,263 @@ app.post("/api/notifications/actions/send-all-pending", async (req, res) => {
       const result = await sendSms(notification.phone, smsBody);
 
       db.prepare(
-        "UPDATE notifications SET status = ?, sent_at = ?, quo_message_id = ?, updated_at = ? WHERE id = ?"
-      ).run("sent", new Date().toISOString(), result.messageId || null, new Date().toISOString(), notification.id);
-
-      logActivity("sms_sent", `SMS sent to ${notification.customer_name}`, notification.id);
-      results.sent++;
-    } catch (err) {
-      db.prepare("UPDATE notifications SET status = ?, error_message = ?, updated_at = ? WHERE id = ?").run(
-        "failed",
-        err.message,
+        `UPDATE notifications
+         SET status = 'sent', sent_at = ?, quo_message_id = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(
+        new Date().toISOString(),
+        result.messageId || null,
         new Date().toISOString(),
         notification.id
       );
-      logActivity("sms_failed", `SMS failed for ${notification.customer_name}: ${err.message}`, notification.id);
+
+      logActivity(
+        "sms_sent",
+        `[6 PM Send] SMS sent to ${notification.customer_name}`,
+        notification.id
+      );
+      results.sent++;
+
+      await sleep(500);
+    } catch (err) {
+      db.prepare(
+        `UPDATE notifications
+         SET status = 'failed', error_message = ?, retry_count = retry_count + 1, updated_at = ?
+         WHERE id = ?`
+      ).run(err.message, new Date().toISOString(), notification.id);
+
+      logActivity(
+        "sms_failed",
+        `[6 PM Send] Failed for ${notification.customer_name}: ${err.message}`,
+        notification.id
+      );
       results.failed++;
       results.errors.push({ id: notification.id, error: err.message });
     }
   }
 
-  res.json(results);
-});
+  console.log(`[Scheduler] Complete — Sent: ${results.sent}, Failed: ${results.failed}`);
+  console.log(`[Scheduler] ═══════════════════════════════════════\n`);
 
-// ─── SMS Template API ────────────────────────────────────
-app.get("/api/template", (req, res) => {
-  const template = db.prepare("SELECT * FROM sms_templates WHERE is_active = 1").get();
-  res.json(template || { body: getSmsBody.DEFAULT_TEMPLATE });
-});
+  logActivity(
+    "scheduler_complete",
+    `Daily 6 PM send complete — ${results.sent} sent, ${results.failed} failed for ${tomorrowStr}`
+  );
 
-app.put("/api/template", (req, res) => {
-  const { body } = req.body;
-  if (!body) return res.status(400).json({ error: "Template body required" });
+  lastSendDate = today;
+  return results;
+}
 
-  // Deactivate existing
-  db.prepare("UPDATE sms_templates SET is_active = 0").run();
-  // Insert new
-  db.prepare("INSERT INTO sms_templates (body, is_active, created_at) VALUES (?, 1, ?)").run(body, new Date().toISOString());
+/**
+ * Execute the 9 PM staff summary.
+ * Sends a text to the staff member summarizing tomorrow's delivery status.
+ */
+async function executeStaffSummary() {
+  const now = getESTNow();
+  const today = now.toISOString().split("T")[0];
 
-  logActivity("template_updated", "SMS template updated");
-  res.json({ success: true });
-});
-
-// ─── Activity Log API ────────────────────────────────────
-app.get("/api/activity", (req, res) => {
-  const { limit = 30, hours } = req.query;
-  let logs;
-  if (hours) {
-    const cutoff = new Date(Date.now() - Number(hours) * 60 * 60 * 1000).toISOString();
-    logs = db.prepare("SELECT * FROM activity_log WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?").all(cutoff, Number(limit));
-  } else {
-    logs = db.prepare("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?").all(Number(limit));
-  }
-  res.json(logs);
-});
-
-// ─── Stats API ───────────────────────────────────────────
-app.get("/api/stats", (req, res) => {
-  const now = new Date();
-  const estNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const today = estNow.toISOString().split("T")[0];
-
-  // Tomorrow's date
-  const tomorrow = new Date(estNow);
+  const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = tomorrow.toISOString().split("T")[0];
 
-  // Next delivery date (skip Sun/Mon)
-  let nextDelivery = new Date(estNow);
-  nextDelivery.setDate(nextDelivery.getDate() + 1);
-  while (nextDelivery.getDay() === 0 || nextDelivery.getDay() === 1) {
-    nextDelivery.setDate(nextDelivery.getDate() + 1);
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const tomorrowDay = dayNames[tomorrow.getDay()];
+  const tomorrowFormatted = tomorrow.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+  console.log(`\n[Scheduler] ═══════════════════════════════════════`);
+  console.log(`[Scheduler] Staff summary triggered at 9 PM EST`);
+  console.log(`[Scheduler] Summary for deliveries on: ${tomorrowStr}`);
+
+  // Get all notifications for tomorrow
+  const all = db
+    .prepare("SELECT * FROM notifications WHERE scheduled_date = ?")
+    .all(tomorrowStr);
+
+  if (all.length === 0) {
+    console.log(`[Scheduler] No deliveries scheduled for ${tomorrowStr} — skipping summary`);
+    logActivity("summary_skipped", `No deliveries for ${tomorrowStr} — no summary sent`);
+    lastSummaryDate = today;
+    return;
   }
-  const nextDeliveryStr = nextDelivery.toISOString().split("T")[0];
 
-  const stats = {
-    // All-time totals
-    allTime: {
-      total: db.prepare("SELECT COUNT(*) as count FROM notifications").get().count,
-      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'sent'").get().count,
-      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'pending'").get().count,
-      failed: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'failed'").get().count,
-      delivered: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'delivered'").get().count,
-      confirmedYes: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'yes'").get().count,
-      declinedNo: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'no'").get().count,
-    },
-    // Today's deliveries (scheduled_date = today)
-    today: {
-      date: today,
-      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(today).count,
-      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'sent'").get(today).count,
-      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(today).count,
-      failed: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'failed'").get(today).count,
-      delivered: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'delivered'").get(today).count,
-      confirmedYes: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'yes'").get(today).count,
-      declinedNo: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'no'").get(today).count,
-    },
-    // Tomorrow's queue
-    tomorrow: {
-      date: tomorrowStr,
-      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(tomorrowStr).count,
-      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(tomorrowStr).count,
-      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'sent'").get(tomorrowStr).count,
-    },
-    // Next delivery date (in case tomorrow is Sun/Mon)
-    nextDelivery: {
-      date: nextDeliveryStr,
-      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(nextDeliveryStr).count,
-      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(nextDeliveryStr).count,
-    },
-    scheduler: getSchedulerStatus(),
-  };
-  res.json(stats);
-});
+  // Categorize
+  const confirmed = all.filter(n => n.customer_response === "yes");
+  const declined = all.filter(n => n.customer_response === "no");
+  const noReply = all.filter(n => n.status === "sent" && !n.customer_response);
+  const pending = all.filter(n => n.status === "pending");
+  const failed = all.filter(n => n.status === "failed");
 
-// ─── Settings API ────────────────────────────────────────
-app.get("/api/settings", (req, res) => {
-  const settings = {};
-  const rows = db.prepare("SELECT key, value FROM settings").all();
-  rows.forEach((r) => (settings[r.key] = r.value));
-  res.json(settings);
-});
+  // Build summary message
+  let msg = `Delivery Summary for ${tomorrowDay}, ${tomorrowFormatted}\n`;
+  msg += `${all.length} total stop${all.length !== 1 ? "s" : ""}\n`;
+  msg += `─────────────\n`;
 
-app.put("/api/settings", (req, res) => {
-  const updates = req.body;
-  const upsert = db.prepare("INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)");
-  const now = new Date().toISOString();
-  Object.entries(updates).forEach(([key, value]) => {
-    upsert.run(key, String(value), now);
-  });
-  logActivity("settings_updated", `Settings updated: ${Object.keys(updates).join(", ")}`);
-  res.json({ success: true });
-});
-
-// ─── Connection Status API ───────────────────────────────
-app.get("/api/connections", async (req, res) => {
-  const spokeConfigured = !!process.env.SPOKE_API_KEY;
-  const quoConfigured = !!process.env.QUO_API_KEY;
-
-  let quoLive = false;
-  if (quoConfigured) {
-    try {
-      quoLive = await getQuoStatus();
-    } catch (e) {
-      quoLive = false;
+  if (confirmed.length > 0) {
+    msg += `\n✅ CONFIRMED (${confirmed.length}):\n`;
+    for (const n of confirmed) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
     }
   }
 
-  res.json({
-    spoke: { configured: spokeConfigured, webhookUrl: `${req.protocol}://${req.get("host")}/api/spoke/webhook` },
-    quo: { configured: quoConfigured, live: quoLive },
-  });
-});
-
-// ─── Quo Reply Webhook (YES/NO responses) ────────────────
-// Configure in Quo: Webhooks → message.received
-// URL: https://your-app.up.railway.app/api/quo/webhook
-app.post("/api/quo/webhook", async (req, res) => {
-  console.log("[Quo Webhook] Received:", JSON.stringify(req.body).substring(0, 300));
-
-  try {
-    const event = req.body;
-    const type = event.type || event.data?.type;
-
-    // Only handle incoming messages
-    if (type === "message.received" || event.data?.object?.direction === "incoming") {
-      const message = event.data?.object || event.data || {};
-      const from = message.from || message.identifier || "";
-      const body = (message.body || message.content || "").trim().toUpperCase();
-
-      if (!from || !body) {
-        return res.status(200).json({ received: true });
-      }
-
-      // Clean the phone number for matching
-      let cleanFrom = from.replace(/[^\d+]/g, "");
-      if (cleanFrom.length === 10) cleanFrom = "+1" + cleanFrom;
-      if (cleanFrom.length === 11 && cleanFrom.startsWith("1")) cleanFrom = "+" + cleanFrom;
-
-      // Find the most recent notification for this phone number
-      const notification = db.prepare(
-        "SELECT * FROM notifications WHERE phone = ? AND status = 'sent' ORDER BY sent_at DESC LIMIT 1"
-      ).get(cleanFrom);
-
-      if (!notification) {
-        console.log(`[Quo Webhook] No matching sent notification for ${cleanFrom.substring(0, 6)}****`);
-        return res.status(200).json({ received: true });
-      }
-
-      if (body === "YES") {
-        db.prepare(
-          "UPDATE notifications SET customer_response = 'yes', response_at = ?, status = 'delivered', updated_at = ? WHERE id = ?"
-        ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
-
-        logActivity("customer_confirmed", `${notification.customer_name} replied YES — delivery confirmed`, notification.id);
-        console.log(`[Quo Webhook] ${notification.customer_name} confirmed delivery (YES)`);
-      } else if (body === "NO") {
-        db.prepare(
-          "UPDATE notifications SET customer_response = 'no', response_at = ?, updated_at = ? WHERE id = ?"
-        ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
-
-        logActivity("customer_declined", `${notification.customer_name} replied NO — needs rescheduling`, notification.id);
-        console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO) — needs follow-up`);
-      } else if (body === "STOP") {
-        db.prepare(
-          "UPDATE notifications SET customer_response = 'stop', updated_at = ? WHERE id = ?"
-        ).run(new Date().toISOString(), notification.id);
-
-        logActivity("customer_optout", `${notification.customer_name} opted out (STOP)`, notification.id);
-      }
+  if (declined.length > 0) {
+    msg += `\n❌ DECLINED (${declined.length}):\n`;
+    for (const n of declined) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += ` ⚠️ NEEDS RESCHEDULE\n`;
     }
-
-    res.status(200).json({ received: true });
-  } catch (err) {
-    console.error("[Quo Webhook] Error:", err.message);
-    res.status(200).json({ received: true, error: err.message });
   }
-});
 
-// ─── Scheduler API ───────────────────────────────────────
-app.get("/api/scheduler", (req, res) => {
-  res.json(getSchedulerStatus());
-});
+  if (noReply.length > 0) {
+    msg += `\n⏳ NO REPLY (${noReply.length}):\n`;
+    for (const n of noReply) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
 
-// Manual trigger for the daily send (for testing or catch-up)
-app.post("/api/scheduler/send-now", async (req, res) => {
+  if (pending.length > 0) {
+    msg += `\n🔸 NOT YET SENT (${pending.length}):\n`;
+    for (const n of pending) {
+      msg += `• ${n.customer_name} — ${n.time_window}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  if (failed.length > 0) {
+    msg += `\n🔴 FAILED TO SEND (${failed.length}):\n`;
+    for (const n of failed) {
+      msg += `• ${n.customer_name} — ${n.phone}`;
+      if (n.address) msg += ` — ${n.address}`;
+      msg += `\n`;
+    }
+  }
+
+  console.log(`[Scheduler] Summary message:\n${msg}`);
+
+  // Send to staff
   try {
-    const results = await executeDailySend();
-    res.json(results);
+    await sendSms(STAFF_PHONE, msg);
+    console.log(`[Scheduler] ✓ Staff summary sent to ${STAFF_PHONE}`);
+    logActivity("staff_summary_sent", `9 PM summary sent — ${confirmed.length} confirmed, ${declined.length} declined, ${noReply.length} no reply, ${pending.length} pending, ${failed.length} failed`);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(`[Scheduler] ✗ Failed to send staff summary:`, err.message);
+    logActivity("staff_summary_failed", `Failed to send 9 PM summary: ${err.message}`);
   }
-});
 
-// Manual trigger for the 9 PM staff summary
-app.post("/api/scheduler/summary-now", async (req, res) => {
-  try {
-    await executeStaffSummary();
-    res.json({ success: true, message: "Staff summary sent" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── Catch-all: serve dashboard ──────────────────────────
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../public/index.html"));
-});
-
-// ─── Helper ──────────────────────────────────────────────
-function logActivity(type, detail, notificationId = null) {
-  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
-    type,
-    detail,
-    notificationId,
-    new Date().toISOString()
-  );
+  console.log(`[Scheduler] ═══════════════════════════════════════\n`);
+  lastSummaryDate = today;
 }
 
-// Make logActivity available to other modules
-app.locals.logActivity = logActivity;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-// ─── Start Server ────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║   Mattress Overstock — Delivery Notification Server      ║
-║   Running on port ${PORT}                                    ║
-║                                                           ║
-║   Spoke Webhook: /api/spoke/webhook                       ║
-║   Quo Replies:   /api/quo/webhook                         ║
-║   Dashboard:     http://localhost:${PORT}                    ║
-║                                                           ║
-║   SCHEDULE: 6 PM EST Mon–Fri (for Tue–Sat deliveries)    ║
-║                                                           ║
-║   Spoke API:   ${process.env.SPOKE_API_KEY ? "✓ Configured" : "✗ Missing — set SPOKE_API_KEY"}       ║
-║   Quo API:     ${process.env.QUO_API_KEY ? "✓ Configured" : "✗ Missing — set QUO_API_KEY"}         ║
-╚═══════════════════════════════════════════════════════════╝
-  `);
+function logActivity(type, detail, notificationId = null) {
+  db.prepare(
+    "INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)"
+  ).run(type, detail, notificationId, new Date().toISOString());
+}
 
-  // Start the 6 PM EST daily scheduler
-  startScheduler();
-});
+/**
+ * Start the scheduler loop.
+ * Checks every minute for both 6 PM and 9 PM triggers.
+ */
+function startScheduler() {
+  const now = getESTNow();
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  console.log(`[Scheduler] Started — checking every minute`);
+  console.log(`[Scheduler] Current EST time: ${now.toLocaleString()}`);
+  console.log(`[Scheduler] Today is ${dayNames[now.getDay()]} — ${isSendDay(now) ? "SEND DAY ✓" : "NO SEND (weekend)"}`);
+  console.log(`[Scheduler] Customer SMS: 6:00 PM EST | Staff summary: 9:00 PM EST`);
+
+  logActivity("scheduler_started", `Scheduler initialized — 6 PM customer send + 9 PM staff summary, Mon–Fri`);
+
+  // Check immediately on startup
+  checkAndSend();
+
+  // Then check every minute
+  setInterval(checkAndSend, CHECK_INTERVAL_MS);
+}
+
+async function checkAndSend() {
+  // 6 PM — customer texts
+  if (shouldSendNow()) {
+    try {
+      await executeDailySend();
+    } catch (err) {
+      console.error("[Scheduler] Fatal error during daily send:", err);
+      logActivity("scheduler_error", `Fatal error: ${err.message}`);
+    }
+  }
+
+  // 9 PM — staff summary
+  if (shouldSendSummary()) {
+    try {
+      await executeStaffSummary();
+    } catch (err) {
+      console.error("[Scheduler] Fatal error during staff summary:", err);
+      logActivity("scheduler_error", `Staff summary error: ${err.message}`);
+    }
+  }
+}
+
+/**
+ * Get scheduler status for the dashboard
+ */
+function getSchedulerStatus() {
+  const now = getESTNow();
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  // Find next send time
+  let nextSend = new Date(now);
+  nextSend.setHours(SEND_HOUR, SEND_MINUTE, 0, 0);
+
+  if (now.getHours() >= SEND_HOUR || !isSendDay(now)) {
+    do {
+      nextSend.setDate(nextSend.getDate() + 1);
+    } while (!isSendDay(nextSend));
+    nextSend.setHours(SEND_HOUR, SEND_MINUTE, 0, 0);
+  }
+
+  // Find next summary time
+  let nextSummary = new Date(now);
+  nextSummary.setHours(SUMMARY_HOUR, SUMMARY_MINUTE, 0, 0);
+
+  if (now.getHours() >= SUMMARY_HOUR || !isSendDay(now)) {
+    do {
+      nextSummary.setDate(nextSummary.getDate() + 1);
+    } while (!isSendDay(nextSummary));
+    nextSummary.setHours(SUMMARY_HOUR, SUMMARY_MINUTE, 0, 0);
+  }
+
+  // Delivery date context
+  const deliveryDate = new Date(nextSend);
+  deliveryDate.setDate(deliveryDate.getDate() + 1);
+  const deliveryStr = deliveryDate.toISOString().split("T")[0];
+
+  const pendingCount = db
+    .prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'pending' AND scheduled_date = ?")
+    .get(deliveryStr)?.count || 0;
+
+  return {
+    currentTimeEST: now.toLocaleString("en-US", { timeZone: "America/New_York" }),
+    todayIsSendDay: isSendDay(now),
+    todayName: dayNames[now.getDay()],
+    lastSendDate,
+    lastSummaryDate,
+    nextSendTime: nextSend.toLocaleString("en-US", { timeZone: "America/New_York" }),
+    nextSendDay: dayNames[nextSend.getDay()],
+    nextSummaryTime: nextSummary.toLocaleString("en-US", { timeZone: "America/New_York" }),
+    nextDeliveryDate: deliveryStr,
+    pendingForNextDelivery: pendingCount,
+    staffPhone: STAFF_PHONE,
+  };
+}
+
+module.exports = { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus };
