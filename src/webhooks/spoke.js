@@ -469,8 +469,8 @@ async function processDeliveryComplete(webhookData) {
     logActivity("review_request_sent", `Google review request sent to ${notification.customer_name} → ${storeName}`, notification.id);
 
     db.prepare(
-      "UPDATE notifications SET status = 'delivered', updated_at = ? WHERE id = ?"
-    ).run(new Date().toISOString(), notification.id);
+      "UPDATE notifications SET status = 'delivered', review_sent_at = ?, updated_at = ? WHERE id = ?"
+    ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
 
   } catch (err) {
     console.error("[Spoke] Failed to send review request:", err.message);
