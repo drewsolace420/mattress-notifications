@@ -1,664 +1,569 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mattress Overstock — Delivery Notifications</title>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'DM Sans', sans-serif; background: #080c14; color: #e2e8f0; min-height: 100vh; }
-    .mono { font-family: 'JetBrains Mono', monospace; }
+/**
+ * Spoke Dispatch Webhook Handler
+ *
+ * Spoke webhooks strip recipient PII (name, phone, email come as null).
+ * So after receiving a webhook, we call the Spoke REST API to fetch
+ * the full stop details including recipient info.
+ *
+ * Spoke REST API: https://api.getcircuit.com/public/v0.2b
+ * Auth: Bearer {SPOKE_API_KEY}
+ *
+ * EVENTS HANDLED:
+ *   stop.allocated          → route sent to driver → creates pending notification
+ *   stop.attempted_delivery → driver marks complete → sends Google review request
+ *
+ * STORE RESOLUTION:
+ *   All deliveries ship from a central depot, so store is determined by
+ *   the leading digit of the "Sale Number" custom property in Spoke:
+ *     1 = (skip review solicitation)
+ *     2 = Nicholasville Road (Lexington)
+ *     3 = Georgetown
+ *     4 = Somerset
+ *     5 = London
+ */
 
-    /* Header */
-    header { border-bottom: 1px solid #1e293b; padding: 16px 28px; display: flex; align-items: center; justify-content: space-between; background: #0b1120; }
-    .logo { display: flex; align-items: center; gap: 14px; }
-    .logo-icon { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, #2dd4bf, #818cf8); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: #080c14; }
-    .logo-text h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
-    .logo-text span { font-size: 11px; color: #64748b; letter-spacing: 0.5px; }
-    .connections { display: flex; gap: 12px; }
-    .conn-badge { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 8px; background: #0f172a; border: 1px solid #1e293b; font-size: 12px; }
-    .conn-dot { width: 8px; height: 8px; border-radius: 50%; }
-    .conn-dot.live { background: #2dd4bf; animation: pulse 2s infinite; }
-    .conn-dot.down { background: #ef4444; }
-    .conn-label { color: #94a3b8; font-weight: 500; }
-    .conn-status { font-weight: 600; font-size: 11px; text-transform: uppercase; }
-    .conn-status.live { color: #2dd4bf; }
-    .conn-status.down { color: #ef4444; }
+const db = require("../database");
+const { sendSms } = require("./quo");
+const { getSmsBody, computeDeliveryWindow, isSendDay, isDeliveryDay } = require("./templates");
+const fetch = require("node-fetch");
 
-    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(45,212,191,0.4); } 50% { box-shadow: 0 0 0 6px rgba(45,212,191,0); } }
+const SPOKE_API_BASE = "https://api.getcircuit.com/public/v0.2b";
 
-    /* Nav */
-    nav { border-bottom: 1px solid #1e293b; padding: 0 28px; background: #0b1120; display: flex; }
-    nav button { padding: 14px 22px; font-size: 13px; font-weight: 600; color: #64748b; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; letter-spacing: 0.2px; transition: all 0.2s; font-family: inherit; }
-    nav button.active { color: #2dd4bf; border-bottom-color: #2dd4bf; }
-    nav button:hover { color: #94a3b8; }
+// ─── Sale Number Leading Digit → Store ──────────────────
+const SALE_PREFIX_TO_STORE = {
+  "1": "other",       // skip review solicitation
+  "2": "lexington",   // Nicholasville Road
+  "3": "georgetown",
+  "4": "somerset",
+  "5": "london",
+};
 
-    /* Main */
-    main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
+// ─── Google Review Links ────────────────────────────────
+const STORE_REVIEW_LINKS = {
+  somerset: "https://g.page/r/CcHG8jVFzOK1EBM/review",
+  lexington: "https://g.page/r/CRCnucIb-t91EBM/review",
+  london: "https://g.page/r/CW69HHcXCceJEBM/review",
+  georgetown: "https://g.page/r/CZQNrg3DMJIdEBM/review",
+};
 
-    /* Stat Cards */
-    .stats { display: flex; gap: 14px; margin-bottom: 28px; flex-wrap: wrap; }
-    .stat-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px 22px; flex: 1; min-width: 140px; }
-    .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #64748b; margin-bottom: 8px; font-weight: 600; }
-    .stat-value { font-size: 32px; font-weight: 700; line-height: 1; font-family: 'JetBrains Mono', monospace; }
-    .stat-sub { font-size: 11px; color: #475569; margin-top: 6px; }
+const STORE_DISPLAY_NAMES = {
+  somerset: "Mattress Overstock - Somerset",
+  lexington: "Mattress Overstock - Nicholasville Road",
+  london: "Mattress Overstock - London",
+  georgetown: "Mattress Overstock - Georgetown",
+  other: "Mattress Overstock",
+};
 
-    /* Panel */
-    .panel { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 18px; }
-    .panel h3 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 14px; }
+/**
+ * Resolve store from Sale Number custom property.
+ * The leading digit determines the store.
+ */
+function resolveStoreFromSaleNumber(saleNumber) {
+  if (!saleNumber) return "unknown";
+  const str = String(saleNumber).trim();
+  if (!str) return "unknown";
+  const leadingDigit = str.charAt(0);
+  return SALE_PREFIX_TO_STORE[leadingDigit] || "unknown";
+}
 
-    /* Table */
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #64748b; border-bottom: 1px solid #1e293b; }
-    td { padding: 14px 16px; border-bottom: 1px solid #1e293b22; }
-    tr:hover { background: #1e293b33; }
+/**
+ * Extract Sale Number from Spoke custom properties.
+ * Custom properties can come as:
+ *   - { "Sale Number": "10221010" }
+ *   - { "sale_number": "10221010" }
+ *   - null
+ */
+function extractSaleNumber(customProperties) {
+  if (!customProperties) return null;
+  // Try common key variations
+  return (
+    customProperties["Sale Number"] ||
+    customProperties["sale_number"] ||
+    customProperties["saleNumber"] ||
+    customProperties["Sale number"] ||
+    customProperties["sale number"] ||
+    customProperties["SaleNumber"] ||
+    null
+  );
+}
 
-    /* Badge */
-    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
-    .badge-sent { color: #2dd4bf; background: rgba(45,212,191,0.12); border: 1px solid rgba(45,212,191,0.13); }
-    .badge-pending { color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.13); }
-    .badge-failed { color: #ef4444; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.13); }
-    .badge-delivered { color: #818cf8; background: rgba(129,140,248,0.12); border: 1px solid rgba(129,140,248,0.13); }
+/**
+ * Fetch a resource from the Spoke REST API
+ */
+async function spokeApiFetch(resourcePath) {
+  const apiKey = process.env.SPOKE_API_KEY;
+  if (!apiKey) {
+    console.log("[Spoke API] No SPOKE_API_KEY set — cannot fetch");
+    return null;
+  }
 
-    /* Store dot */
-    .store-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #94a3b8; }
-    .store-dot span { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  const url = `${SPOKE_API_BASE}/${resourcePath}`;
+  console.log("[Spoke API] Fetching:", url);
 
-    /* Buttons */
-    .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.2s; font-family: inherit; }
-    .btn:hover { opacity: 0.85; }
-    .btn-primary { background: linear-gradient(135deg, #2dd4bf, #14b8a6); color: #042f2e; }
-    .btn-outline { background: transparent; border: 1px solid #2dd4bf; color: #2dd4bf; padding: 5px 12px; font-size: 11px; }
-    .btn-danger { background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 5px 12px; font-size: 11px; }
-
-    /* Activity log */
-    .log-entry { padding: 10px 0; border-bottom: 1px solid #1e293b22; display: flex; gap: 12px; align-items: flex-start; }
-    .log-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
-    .log-event { font-size: 12px; font-weight: 600; color: #cbd5e1; }
-    .log-time { font-size: 11px; color: #475569; font-family: 'JetBrains Mono', monospace; }
-    .log-detail { font-size: 12px; color: #64748b; margin-top: 2px; }
-
-    /* Grid */
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-
-    /* Workflow */
-    .workflow { display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap; padding: 10px 0; }
-    .workflow-step { text-align: center; padding: 14px 16px; background: #1e293b44; border-radius: 10px; border: 1px solid #1e293b; min-width: 120px; }
-    .workflow-step .icon { font-size: 24px; margin-bottom: 6px; }
-    .workflow-step .label { font-size: 12px; font-weight: 700; color: #e2e8f0; }
-    .workflow-step .sub { font-size: 10px; color: #64748b; margin-top: 2px; }
-    .workflow-arrow { width: 40px; height: 2px; background: linear-gradient(90deg, #2dd4bf44, #818cf844); margin: 0 -2px; }
-
-    /* Toast */
-    .toast { position: fixed; top: 20px; right: 20px; z-index: 999; background: #166534; color: #bbf7d0; padding: 12px 20px; border-radius: 10px; font-size: 13px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.4); transform: translateX(120%); transition: transform 0.3s ease; }
-    .toast.show { transform: translateX(0); }
-
-    /* Filters */
-    select { padding: 8px 12px; border-radius: 8px; border: 1px solid #1e293b; background: #0f172a; color: #e2e8f0; font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; }
-    select:focus { outline: none; border-color: #2dd4bf; }
-
-    /* Empty state */
-    .empty { padding: 40px; text-align: center; color: #475569; }
-
-    /* Loading */
-    .loading { text-align: center; padding: 40px; color: #64748b; }
-
-    /* Responsive */
-    @media (max-width: 768px) {
-      .grid-2 { grid-template-columns: 1fr; }
-      .stats { flex-direction: column; }
-      .workflow { flex-direction: column; }
-      .workflow-arrow { width: 2px; height: 20px; }
-    }
-  </style>
-</head>
-<body>
-  <!-- Toast -->
-  <div id="toast" class="toast"></div>
-
-  <!-- Header -->
-  <header>
-    <div class="logo">
-      <div class="logo-icon">M</div>
-      <div class="logo-text">
-        <h1>Mattress Overstock</h1>
-        <span>DELIVERY NOTIFICATION HUB</span>
-      </div>
-    </div>
-    <div class="connections">
-      <div class="conn-badge">
-        <div id="spoke-dot" class="conn-dot live"></div>
-        <span class="conn-label">Spoke Dispatch</span>
-        <span id="spoke-status" class="conn-status live">Live</span>
-      </div>
-      <div class="conn-badge">
-        <div id="quo-dot" class="conn-dot live"></div>
-        <span class="conn-label">Quo</span>
-        <span id="quo-status" class="conn-status live">Live</span>
-      </div>
-    </div>
-  </header>
-
-  <!-- Nav -->
-  <nav>
-    <button class="active" data-tab="overview">Overview</button>
-    <button data-tab="notifications">Notifications</button>
-    <button data-tab="settings">Settings</button>
-  </nav>
-
-  <!-- Main Content -->
-  <main>
-    <!-- Overview Tab -->
-    <div id="tab-overview">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div>
-          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px" id="overview-title">Today's Deliveries</h2>
-          <p style="color:#64748b;font-size:13px;margin-top:4px" id="overview-subtitle">Loading...</p>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center">
-          <button class="btn btn-outline" id="toggle-view-btn" onclick="toggleStatsView()" style="font-size:11px">Show All-Time</button>
-          <button class="btn btn-primary" id="send-all-btn" style="display:none" onclick="sendAllPending()">
-            Send All Pending (<span id="pending-badge">0</span>)
-          </button>
-        </div>
-      </div>
-
-      <div class="stats" id="stats-container">
-        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub" id="sub-sent">SMS delivered today</div></div>
-        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub" id="sub-pending">Awaiting 6 PM send</div></div>
-        <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="stat-failed" style="color:#ef4444">—</div><div class="stat-sub" id="sub-failed">Needs attention</div></div>
-        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-delivered" style="color:#818cf8">—</div><div class="stat-sub" id="sub-delivered">Replied YES</div></div>
-      </div>
-
-      <!-- Tomorrow's Queue + Scheduler -->
-      <div class="grid-2" style="margin-bottom:18px">
-        <div class="panel" style="border-left:3px solid #818cf8">
-          <h3 style="display:flex;justify-content:space-between;align-items:center">
-            <span>Tomorrow's Queue</span>
-            <span class="mono" id="tomorrow-date" style="font-size:11px;color:#64748b;text-transform:none;letter-spacing:0">—</span>
-          </h3>
-          <div style="display:flex;gap:20px;margin-top:12px">
-            <div>
-              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#818cf8" id="tomorrow-total">0</div>
-              <div style="font-size:11px;color:#64748b;margin-top:2px">Total stops</div>
-            </div>
-            <div>
-              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#fbbf24" id="tomorrow-pending">0</div>
-              <div style="font-size:11px;color:#64748b;margin-top:2px">Pending send</div>
-            </div>
-            <div>
-              <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#2dd4bf" id="tomorrow-sent">0</div>
-              <div style="font-size:11px;color:#64748b;margin-top:2px">Already sent</div>
-            </div>
-          </div>
-        </div>
-        <div class="panel" style="border-left:3px solid #2dd4bf">
-          <h3>Scheduler</h3>
-          <div style="margin-top:10px;font-size:13px;line-height:2">
-            <div style="display:flex;justify-content:space-between">
-              <span style="color:#64748b">Status</span>
-              <span id="sched-status" style="font-weight:600;color:#2dd4bf">Active</span>
-            </div>
-            <div style="display:flex;justify-content:space-between">
-              <span style="color:#64748b">Customer SMS</span>
-              <span class="mono" id="sched-next" style="font-size:12px;color:#e2e8f0">—</span>
-            </div>
-            <div style="display:flex;justify-content:space-between">
-              <span style="color:#64748b">Staff summary</span>
-              <span class="mono" id="sched-summary" style="font-size:12px;color:#e2e8f0">9:00 PM EST</span>
-            </div>
-            <div style="display:flex;justify-content:space-between">
-              <span style="color:#64748b">Today</span>
-              <span id="sched-today" style="font-size:12px;color:#e2e8f0">—</span>
-            </div>
-            <div style="display:flex;gap:8px;margin-top:6px">
-              <button class="btn btn-outline" onclick="triggerManualSend()" style="flex:1;text-align:center;font-size:11px">⚡ Send Now</button>
-              <button class="btn btn-outline" onclick="triggerStaffSummary()" style="flex:1;text-align:center;font-size:11px">📋 Summary Now</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="grid-2">
-        <div class="panel">
-          <h3 style="display:flex;justify-content:space-between;align-items:center">
-            <span>Recent Activity</span>
-            <span style="font-size:10px;color:#475569;text-transform:none;letter-spacing:0;font-weight:400">Last 24 hours</span>
-          </h3>
-          <div id="activity-log">
-            <div class="loading">Loading activity...</div>
-          </div>
-        </div>
-        <div class="panel">
-          <h3>Automation Workflow</h3>
-          <div class="workflow">
-            <div class="workflow-step"><div class="icon">📦</div><div class="label">Spoke Dispatch</div><div class="sub">Route sent to driver</div></div>
-            <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">⚙️</div><div class="label">Process Stop</div><div class="sub">Fetch recipient + ETA</div></div>
-            <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">⏰</div><div class="label">6 PM EST</div><div class="sub">Daily batch send</div></div>
-            <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">💬</div><div class="label">SMS via Quo</div><div class="sub">YES / NO reply</div></div>
-          </div>
-          <div style="margin-top:14px;padding:12px;background:#1e293b44;border-radius:8px;font-size:11px;color:#64748b;line-height:1.8">
-            <strong style="color:#94a3b8">6 PM:</strong> Customer texts sent Mon–Fri for next-day deliveries<br>
-            <strong style="color:#94a3b8">9 PM:</strong> Staff summary sent to scheduling team<br>
-            <strong style="color:#94a3b8">Windows:</strong> 2-hour blocks, rounded up to nearest :30<br>
-            <strong style="color:#94a3b8">Replies:</strong> YES = confirmed, NO = needs rescheduling
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Notifications Tab -->
-    <div id="tab-notifications" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
-        <h2 style="font-size:20px;font-weight:700">All Notifications</h2>
-        <div style="display:flex;gap:10px">
-          <select id="filter-store" onchange="loadNotifications()">
-            <option value="">All Stores</option>
-            <option value="somerset">Somerset</option>
-            <option value="lexington">Nicholasville Rd</option>
-            <option value="london">London</option>
-            <option value="georgetown">Georgetown</option>
-            <option value="richmond">Richmond</option>
-            <option value="winchester">Winchester</option>
-            <option value="laurel">Laurel County</option>
-          </select>
-          <select id="filter-status" onchange="loadNotifications()">
-            <option value="">All Status</option>
-            <option value="sent">Sent</option>
-            <option value="pending">Pending</option>
-            <option value="failed">Failed</option>
-            <option value="delivered">Delivered</option>
-          </select>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Customer</th>
-                <th>Store</th>
-                <th>Delivery Date</th>
-                <th>Time Window</th>
-                <th>Product</th>
-                <th>Status</th>
-                <th>Response</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="notifications-table">
-              <tr><td colspan="8" class="loading">Loading notifications...</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
-    <!-- Settings Tab -->
-    <div id="tab-settings" style="display:none">
-      <h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Configuration</h2>
-
-      <div class="panel">
-        <h3>API Connections</h3>
-        <div class="grid-2">
-          <div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-              <strong style="font-size:14px">Spoke Dispatch</strong>
-              <span id="spoke-config-status" style="font-size:11px;font-weight:600">Checking...</span>
-            </div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">Webhook URL</div>
-            <input readonly id="webhook-url" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace" value="Loading...">
-            <div style="font-size:11px;color:#475569;margin-top:8px">Copy this URL into Spoke Dispatch → Settings → Integrations → Webhooks</div>
-          </div>
-          <div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-              <strong style="font-size:14px">Quo (SMS)</strong>
-              <span id="quo-config-status" style="font-size:11px;font-weight:600">Checking...</span>
-            </div>
-            <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">API Endpoint</div>
-            <input readonly value="https://api.quo.com/v1/messages" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace">
-            <div style="font-size:11px;color:#475569;margin-top:8px">Set QUO_API_KEY and QUO_PHONE_NUMBER_ID in Railway environment variables</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <h3 style="margin-bottom:0">SMS Template</h3>
-          <button class="btn btn-outline" onclick="toggleTemplateEdit()">Edit Template</button>
-        </div>
-        <div id="template-display" style="padding:16px;background:#1e293b44;border-radius:8px;border:1px solid #1e293b;font-size:13px;color:#94a3b8;line-height:1.7">Loading...</div>
-        <div id="template-editor" style="display:none;margin-top:12px">
-          <textarea id="template-input" rows="4" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:'DM Sans',system-ui;resize:vertical;line-height:1.7"></textarea>
-          <div style="font-size:11px;color:#475569;line-height:1.6;margin-top:6px">
-            <strong style="color:#64748b">Variables:</strong> {{customer_first}}, {{customer_last}}, {{date}}, {{time_window}}, {{driver}}, {{store}}, {{product}}, {{address}}, {{business_name}}
-          </div>
-          <button class="btn btn-primary" style="margin-top:12px" onclick="saveTemplate()">Save Template</button>
-        </div>
-      </div>
-    </div>
-  </main>
-
-  <script>
-    const API = '';  // Same origin
-    let showAllTime = false;
-
-    // ─── Tab Navigation ────────────────────────
-    document.querySelectorAll('nav button').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none');
-        document.getElementById('tab-' + btn.dataset.tab).style.display = '';
-        if (btn.dataset.tab === 'notifications') loadNotifications();
-        if (btn.dataset.tab === 'settings') loadSettings();
-      });
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
     });
 
-    // ─── Toast ─────────────────────────────────
-    function showToast(msg) {
-      const t = document.getElementById('toast');
-      t.textContent = '✓ ' + msg;
-      t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 3000);
+    if (!res.ok) {
+      console.error("[Spoke API] Error:", res.status, res.statusText);
+      const text = await res.text();
+      console.error("[Spoke API] Body:", text.substring(0, 500));
+      return null;
     }
 
-    // ─── Store colors ──────────────────────────
-    const storeColors = { richmond: '#2dd4bf', somerset: '#818cf8', laurel: '#fb923c', london: '#f472b6', winchester: '#a3e635', georgetown: '#38bdf8', lexington: '#c084fc' };
-    const storeNames = { richmond: 'Richmond', somerset: 'Somerset', laurel: 'Laurel County', london: 'London', winchester: 'Winchester', georgetown: 'Georgetown', lexington: 'Nicholasville Rd' };
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error("[Spoke API] Fetch error:", err.message);
+    return null;
+  }
+}
 
-    function storeDot(store) {
-      const c = storeColors[store] || '#64748b';
-      const n = storeNames[store] || store || '—';
-      return `<span class="store-dot"><span style="background:${c}"></span>${n}</span>`;
-    }
+/**
+ * Main webhook handler
+ */
+async function handleSpokeWebhook(payload, headers) {
+  const results = { processed: 0, skipped: 0, errors: [] };
 
-    function badge(status) {
-      return `<span class="badge badge-${status}">${status}</span>`;
-    }
+  // ─── Spoke Webhook Events ───
+  if (payload.type && payload.data) {
+    console.log("[Spoke] Event type:", payload.type);
 
-    function formatDate(dateStr) {
-      if (!dateStr) return '—';
-      const d = new Date(dateStr + 'T12:00:00');
-      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    }
-
-    // ─── Toggle daily / all-time ────────────────
-    function toggleStatsView() {
-      showAllTime = !showAllTime;
-      document.getElementById('toggle-view-btn').textContent = showAllTime ? 'Show Today' : 'Show All-Time';
-      document.getElementById('overview-title').textContent = showAllTime ? 'All-Time Stats' : "Today's Deliveries";
-      loadStats();
-    }
-
-    // ─── Load Stats ────────────────────────────
-    async function loadStats() {
+    if (payload.type === "stop.allocated") {
       try {
-        const res = await fetch(API + '/api/stats');
-        const data = await res.json();
+        await processSpokeStop(payload.data);
+        results.processed++;
+      } catch (err) {
+        console.error("[Spoke] Error:", err.message, err.stack);
+        results.errors.push({ error: err.message });
+      }
+    } else if (payload.type === "stop.attempted_delivery") {
+      try {
+        await processDeliveryComplete(payload.data);
+        results.processed++;
+      } catch (err) {
+        console.error("[Spoke] Delivery complete error:", err.message, err.stack);
+        results.errors.push({ error: err.message });
+      }
+    } else {
+      console.log("[Spoke] Ignoring event:", payload.type);
+      results.skipped++;
+    }
+    return results;
+  }
 
-        // Pick daily or all-time
-        const s = showAllTime ? data.allTime : data.today;
+  // ─── Manual/Test webhook ───
+  if (payload.stop) {
+    try {
+      await processManualStop(payload.stop);
+      results.processed++;
+    } catch (err) {
+      console.error("[Spoke] Error:", err.message, err.stack);
+      results.errors.push({ error: err.message });
+    }
+    return results;
+  }
 
-        document.getElementById('stat-sent').textContent = s.sent || 0;
-        document.getElementById('stat-pending').textContent = s.pending || 0;
-        document.getElementById('stat-failed').textContent = s.failed || 0;
-        document.getElementById('stat-delivered').textContent = s.delivered || 0;
-
-        // Subtitles
-        if (showAllTime) {
-          document.getElementById('sub-sent').textContent = 'Total SMS sent';
-          document.getElementById('sub-pending').textContent = 'Awaiting send';
-          document.getElementById('sub-failed').textContent = 'Needs attention';
-          document.getElementById('sub-delivered').textContent = 'Confirmed deliveries';
-        } else {
-          document.getElementById('sub-sent').textContent = 'SMS sent for today';
-          document.getElementById('sub-pending').textContent = 'Awaiting 6 PM send';
-          document.getElementById('sub-failed').textContent = 'Needs attention';
-          document.getElementById('sub-delivered').textContent = 'Replied YES';
-        }
-
-        // Show send button if any pending
-        const totalPending = data.today.pending + (data.tomorrow?.pending || 0);
-        if (totalPending > 0) {
-          document.getElementById('send-all-btn').style.display = '';
-          document.getElementById('pending-badge').textContent = totalPending;
-        } else {
-          document.getElementById('send-all-btn').style.display = 'none';
-        }
-
-        // Date subtitle
-        const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        document.getElementById('overview-subtitle').textContent = showAllTime
-          ? `${data.allTime.total} total notifications processed`
-          : `${today} — Automated via Spoke Dispatch → Quo SMS`;
-
-        // Tomorrow's queue
-        const tm = data.tomorrow || {};
-        document.getElementById('tomorrow-date').textContent = formatDate(tm.date);
-        document.getElementById('tomorrow-total').textContent = tm.total || 0;
-        document.getElementById('tomorrow-pending').textContent = tm.pending || 0;
-        document.getElementById('tomorrow-sent').textContent = tm.sent || 0;
-
-        // Scheduler
-        const sched = data.scheduler || {};
-        document.getElementById('sched-status').textContent = sched.todayIsSendDay ? 'Active — Send Day' : 'Paused — Weekend';
-        document.getElementById('sched-status').style.color = sched.todayIsSendDay ? '#2dd4bf' : '#fbbf24';
-        document.getElementById('sched-next').textContent = sched.nextSendDay ? `${sched.nextSendDay} 6:00 PM` : '—';
-        document.getElementById('sched-today').textContent = sched.todayName || '—';
-
-      } catch (e) {
-        console.error('Failed to load stats:', e);
+  // ─── Array of stops ───
+  if (Array.isArray(payload)) {
+    for (const stop of payload) {
+      try {
+        await processManualStop(stop);
+        results.processed++;
+      } catch (err) {
+        results.errors.push({ error: err.message });
       }
     }
+    return results;
+  }
 
-    // ─── Load Activity Log (last 24 hours) ─────
-    async function loadActivity() {
-      try {
-        const res = await fetch(API + '/api/activity?limit=20&hours=24');
-        const logs = await res.json();
-        const container = document.getElementById('activity-log');
+  console.log("[Spoke] Unrecognized payload:", JSON.stringify(payload).substring(0, 300));
+  results.skipped++;
+  return results;
+}
 
-        if (logs.length === 0) {
-          container.innerHTML = '<div class="empty">No activity in the last 24 hours</div>';
-          return;
-        }
+/**
+ * Process a stop.allocated webhook event.
+ *
+ * The webhook strips recipient PII, so we fetch full details from the REST API.
+ * We use the projected ETA (estimatedArrivalAt) for the time window.
+ * Store is determined by the Sale Number custom property.
+ */
+async function processSpokeStop(webhookData) {
+  const stopId = webhookData.id; // e.g., "plans/abc123/stops/xyz789"
+  console.log("[Spoke] Processing stop.allocated:", stopId);
 
-        container.innerHTML = logs.map(log => {
-          const dotColor =
-            log.type.includes('sent') ? '#2dd4bf' :
-            log.type.includes('fail') ? '#ef4444' :
-            log.type.includes('confirm') ? '#818cf8' :
-            log.type.includes('decline') ? '#fbbf24' :
-            log.type.includes('import') ? '#818cf8' :
-            log.type.includes('scheduler') ? '#2dd4bf' :
-            '#475569';
-          const time = new Date(log.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-          return `<div class="log-entry">
-            <div class="log-dot" style="background:${dotColor}"></div>
-            <div style="flex:1">
-              <div style="display:flex;justify-content:space-between;align-items:center">
-                <span class="log-event">${log.type.replace(/_/g, ' ')}</span>
-                <span class="log-time">${time}</span>
-              </div>
-              <div class="log-detail">${log.detail}</div>
-            </div>
-          </div>`;
-        }).join('');
-      } catch (e) {
-        console.error('Failed to load activity:', e);
+  // ─── Skip depot start/end stops ───
+  const stopType = webhookData.type;
+  if (stopType === "start" || stopType === "end") {
+    console.log(`[Spoke] Skipping depot stop (type: ${stopType})`);
+    return;
+  }
+
+  // ─── Fetch full stop from REST API (has recipient info + custom properties) ───
+  let fullStop = null;
+  if (stopId) {
+    fullStop = await spokeApiFetch(stopId);
+    if (fullStop) {
+      console.log("[Spoke API] Full stop recipient:", JSON.stringify(fullStop.recipient));
+      console.log("[Spoke API] Full stop customProperties:", JSON.stringify(fullStop.customProperties));
+    } else {
+      console.log("[Spoke API] Could not fetch full stop — using webhook data only");
+    }
+  }
+
+  // Merge: prefer REST API data, fall back to webhook data
+  const data = fullStop || webhookData;
+  const webhookEta = webhookData.eta || {};
+
+  // ─── Customer info ───
+  const recipient = data.recipient || {};
+  const customerName =
+    recipient.name ||
+    recipient.displayName ||
+    `${recipient.firstName || ""} ${recipient.lastName || ""}`.trim() ||
+    "Unknown Customer";
+
+  const phone =
+    recipient.phone ||
+    recipient.phoneNumber ||
+    recipient.mobile ||
+    null;
+
+  console.log("[Spoke] Customer:", customerName, "| Phone:", phone);
+
+  if (!phone) {
+    console.log("[Spoke] ⚠ No phone number — skipping");
+    console.log("[Spoke] Recipient keys:", Object.keys(recipient));
+    logActivity("stop_skipped", `No phone for ${customerName} at ${data.address?.addressLineOne || "unknown address"}`);
+    return;
+  }
+
+  // ─── Address ───
+  const addr = data.address || {};
+  const address = addr.addressLineOne || addr.address || "";
+
+  // ─── Store from Sale Number ───
+  const saleNumber = extractSaleNumber(data.customProperties);
+  const store = resolveStoreFromSaleNumber(saleNumber);
+  console.log("[Spoke] Sale Number:", saleNumber, "→ Store:", store);
+
+  // ─── Scheduled date ───
+  let scheduledDate = null;
+
+  const routeData = data.route || webhookData.route || {};
+  if (routeData.title) {
+    scheduledDate = parseDateFromRouteTitle(routeData.title);
+    console.log("[Spoke] Date from route title:", routeData.title, "→", scheduledDate);
+  }
+  if (!scheduledDate) {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    scheduledDate = tomorrow.toISOString().split("T")[0];
+  }
+
+  // ─── Delivery time window from ETA ───
+  let rawDeliveryTime = null;
+  let timeWindow = "TBD";
+
+  const etaTimestamp =
+    webhookEta.estimatedArrivalAt ||
+    webhookEta.estimatedEarliestArrivalAt ||
+    data.eta?.estimatedArrivalAt ||
+    data.eta?.estimatedEarliestArrivalAt ||
+    null;
+
+  if (etaTimestamp) {
+    const etaDate = new Date(etaTimestamp * 1000);
+    const estString = etaDate.toLocaleString("en-US", { timeZone: "America/New_York" });
+    const estDate = new Date(estString);
+    const hours = estDate.getHours();
+    const minutes = estDate.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
+
+    rawDeliveryTime = `${hours}:${String(minutes).padStart(2, "0")}`;
+    const window = computeDeliveryWindow(totalMinutes);
+    timeWindow = window.windowText;
+    console.log("[Spoke] ETA timestamp:", etaTimestamp, "→ EST:", rawDeliveryTime, "→ Window:", timeWindow);
+  } else {
+    const timing = data.timing || {};
+    if (timing.earliestAttemptTime) {
+      const earliest = timing.earliestAttemptTime;
+      const totalMinutes = (earliest.hour || 0) * 60 + (earliest.minute || 0);
+      rawDeliveryTime = `${earliest.hour}:${String(earliest.minute || 0).padStart(2, "0")}`;
+      const window = computeDeliveryWindow(totalMinutes);
+      timeWindow = window.windowText;
+    }
+  }
+
+  console.log("[Spoke] Time window:", timeWindow);
+
+  // ─── Product / notes ───
+  const product =
+    data.notes ||
+    data.orderInfo?.products?.join(", ") ||
+    (saleNumber ? `Sale #${saleNumber}` : "") ||
+    "";
+
+  // ─── Driver ───
+  let driver = "Your driver";
+  const driverRef = routeData.driver;
+
+  if (typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
+    const driverData = await spokeApiFetch(driverRef);
+    if (driverData) {
+      driver = driverData.displayName || driverData.name || "Your driver";
+      console.log("[Spoke] Driver:", driver);
+    }
+  } else if (typeof driverRef === "object" && driverRef) {
+    driver = driverRef.displayName || driverRef.name || "Your driver";
+  }
+
+  // ─── Dedup ───
+  const spokeStopId = stopId || null;
+  const spokeRouteId = routeData.id || null;
+
+  if (spokeStopId) {
+    const existing = db.prepare("SELECT id FROM notifications WHERE spoke_stop_id = ?").get(spokeStopId);
+    if (existing) {
+      console.log("[Spoke] Duplicate stop — skipping");
+      return;
+    }
+  }
+
+  // ─── Validate delivery day (Tue–Sat) ───
+  const deliveryDate = new Date(scheduledDate + "T12:00:00");
+  if (!isDeliveryDay(deliveryDate)) {
+    console.log("[Spoke]", scheduledDate, "is not a delivery day — skipping");
+    return;
+  }
+
+  // ─── Insert notification ───
+  console.log("[Spoke] Inserting:", customerName, "|", store, "|", scheduledDate, "|", timeWindow);
+
+  const result = db
+    .prepare(
+      `INSERT INTO notifications
+      (customer_name, phone, store, address, scheduled_date, time_window, raw_delivery_time, product, driver, status, spoke_stop_id, spoke_route_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
+    )
+    .run(
+      customerName,
+      cleanPhone(phone),
+      store,
+      address,
+      scheduledDate,
+      timeWindow,
+      rawDeliveryTime || null,
+      product,
+      driver,
+      spokeStopId,
+      spokeRouteId,
+      new Date().toISOString(),
+      new Date().toISOString()
+    );
+
+  const notificationId = result.lastInsertRowid;
+  logActivity("stop_imported", `New delivery: ${customerName} → ${STORE_DISPLAY_NAMES[store] || store} (${timeWindow})`, notificationId);
+  console.log("[Spoke] ✓ Stored notification #" + notificationId);
+}
+
+/**
+ * Process a stop.attempted_delivery event.
+ *
+ * When the driver marks a stop as complete/delivered, we send the customer
+ * a thank-you text with a Google Review link for the correct store.
+ *
+ * If the store is "other" (sale number starts with 1), skip the review request.
+ */
+async function processDeliveryComplete(webhookData) {
+  const stopId = webhookData.id;
+  console.log("[Spoke] Processing stop.attempted_delivery:", stopId);
+
+  // ─── Skip depot start/end stops ───
+  const stopType = webhookData.type;
+  if (stopType === "start" || stopType === "end") {
+    console.log(`[Spoke] Skipping depot stop (type: ${stopType})`);
+    return;
+  }
+
+  // ─── Check if delivery was successful ───
+  const deliveryInfo = webhookData.deliveryInfo || webhookData;
+  const succeeded = deliveryInfo.succeeded === true;
+  const attempted = deliveryInfo.attempted === true;
+
+  if (!succeeded && attempted) {
+    console.log("[Spoke] Delivery attempted but not successful — skipping review request");
+    logActivity("delivery_failed", `Delivery attempt failed for stop ${stopId}`);
+    return;
+  }
+
+  // ─── Find matching notification in our database ───
+  let notification = null;
+  if (stopId) {
+    notification = db.prepare("SELECT * FROM notifications WHERE spoke_stop_id = ?").get(stopId);
+  }
+
+  if (!notification) {
+    console.log("[Spoke] No matching notification for completed stop — trying API lookup");
+
+    const fullStop = stopId ? await spokeApiFetch(stopId) : null;
+    if (fullStop?.recipient?.phone) {
+      const cleanedPhone = cleanPhone(fullStop.recipient.phone);
+      notification = db.prepare(
+        "SELECT * FROM notifications WHERE phone = ? ORDER BY scheduled_date DESC LIMIT 1"
+      ).get(cleanedPhone);
+    }
+  }
+
+  if (!notification) {
+    console.log("[Spoke] Could not match delivery completion to a notification — skipping");
+    return;
+  }
+
+  const store = notification.store;
+  console.log("[Spoke] Delivery complete for:", notification.customer_name, "| Store:", store);
+
+  // ─── Skip review for "other" stores (sale number starts with 1) ───
+  if (store === "other") {
+    console.log("[Spoke] Store is 'other' (sale prefix 1) — skipping review solicitation");
+    logActivity("delivery_complete", `Delivery complete for ${notification.customer_name} — no review (store: other)`, notification.id);
+    db.prepare(
+      "UPDATE notifications SET status = 'delivered', updated_at = ? WHERE id = ?"
+    ).run(new Date().toISOString(), notification.id);
+    return;
+  }
+
+  // ─── Build review request message ───
+  const reviewLink = STORE_REVIEW_LINKS[store] || null;
+  const storeName = STORE_DISPLAY_NAMES[store] || "Mattress Overstock";
+
+  let message;
+  if (reviewLink) {
+    message =
+      `Your mattress has been delivered! Thank you for choosing ${storeName}. ` +
+      `We'd love your feedback — tap here to leave a quick review:\n${reviewLink}`;
+  } else {
+    message =
+      `Your mattress has been delivered! Thank you for choosing Mattress Overstock. ` +
+      `We appreciate your business!`;
+  }
+
+  // ─── Send review request ───
+  try {
+    await sendSms(notification.phone, message);
+    console.log(`[Spoke] ✓ Review request sent to ${notification.customer_name} (${store})`);
+    logActivity("review_request_sent", `Google review request sent to ${notification.customer_name} → ${storeName}`, notification.id);
+
+    db.prepare(
+      "UPDATE notifications SET status = 'delivered', updated_at = ? WHERE id = ?"
+    ).run(new Date().toISOString(), notification.id);
+
+  } catch (err) {
+    console.error("[Spoke] Failed to send review request:", err.message);
+    logActivity("review_request_failed", `Failed to send review request to ${notification.customer_name}: ${err.message}`, notification.id);
+  }
+}
+
+/**
+ * Process a manually sent test stop (our custom format)
+ */
+async function processManualStop(stop) {
+  const customerName = stop.recipient?.name || stop.customer_name || stop.name || "Unknown Customer";
+  const phone = stop.recipient?.phone || stop.customer_phone || stop.phone || null;
+
+  if (!phone) {
+    console.log("[Spoke] No phone for", customerName, "— skipping");
+    return;
+  }
+
+  const address = (typeof stop.address === "string" ? stop.address : "") || stop.address?.addressLineOne || "";
+  const scheduledDate = stop.scheduledDate || stop.date || new Date().toISOString().split("T")[0];
+
+  let timeWindow = "TBD";
+  let rawDeliveryTime = stop.startTime || null;
+  if (rawDeliveryTime) {
+    const window = computeDeliveryWindow(rawDeliveryTime);
+    timeWindow = window.windowText;
+  }
+
+  const product = stop.notes || stop.product || "";
+  const driver = stop.driver?.name || stop.driverName || "Your driver";
+
+  // Resolve store from sale number if provided
+  const saleNumber = stop.saleNumber || stop.sale_number || null;
+  const store = saleNumber ? resolveStoreFromSaleNumber(saleNumber) : (stop.store || "unknown");
+
+  const spokeStopId = stop.id || null;
+
+  if (spokeStopId) {
+    const existing = db.prepare("SELECT id FROM notifications WHERE spoke_stop_id = ?").get(spokeStopId);
+    if (existing) {
+      console.log("[Spoke] Duplicate stop — skipping");
+      return;
+    }
+  }
+
+  const deliveryDate = new Date(scheduledDate + "T12:00:00");
+  if (!isDeliveryDay(deliveryDate)) {
+    console.log("[Spoke]", scheduledDate, "is not a delivery day — skipping");
+    return;
+  }
+
+  const result = db
+    .prepare(
+      `INSERT INTO notifications
+      (customer_name, phone, store, address, scheduled_date, time_window, raw_delivery_time, product, driver, status, spoke_stop_id, spoke_route_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
+    )
+    .run(
+      customerName, cleanPhone(phone), store, address, scheduledDate,
+      timeWindow, rawDeliveryTime, product, driver, spokeStopId, null,
+      new Date().toISOString(), new Date().toISOString()
+    );
+
+  const notificationId = result.lastInsertRowid;
+  logActivity("stop_imported", `New delivery: ${customerName} → ${store} (${timeWindow})`, notificationId);
+  console.log("[Spoke] ✓ Stored notification #" + notificationId);
+}
+
+/**
+ * Parse date from Spoke route title like "Sat, Feb 28 Route"
+ */
+function parseDateFromRouteTitle(title) {
+  if (!title) return null;
+  try {
+    const match = title.match(/(\w+),\s+(\w+)\s+(\d+)/);
+    if (match) {
+      const months = { Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5, Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11 };
+      const month = months[match[2]];
+      if (month !== undefined) {
+        const day = parseInt(match[3], 10);
+        const year = new Date().getFullYear();
+        const date = new Date(year, month, day);
+        return date.toISOString().split("T")[0];
       }
     }
+  } catch (e) {}
+  return null;
+}
 
-    // ─── Manual Send Trigger ────────────────────
-    async function triggerManualSend() {
-      try {
-        const res = await fetch(API + '/api/scheduler/send-now', { method: 'POST' });
-        const data = await res.json();
-        showToast(`Manual send: ${data.sent || 0} sent, ${data.failed || 0} failed`);
-        loadStats();
-        loadActivity();
-      } catch (e) { showToast('Failed to trigger send'); }
-    }
+function cleanPhone(phone) {
+  if (!phone) return "";
+  let cleaned = phone.replace(/[^\d+]/g, "");
+  if (cleaned.length === 10) cleaned = "+1" + cleaned;
+  if (cleaned.length === 11 && cleaned.startsWith("1")) cleaned = "+" + cleaned;
+  return cleaned;
+}
 
-    // ─── Staff Summary Trigger ──────────────────
-    async function triggerStaffSummary() {
-      try {
-        const res = await fetch(API + '/api/scheduler/summary-now', { method: 'POST' });
-        const data = await res.json();
-        showToast('Staff summary sent');
-        loadActivity();
-      } catch (e) { showToast('Failed to send summary'); }
-    }
+function logActivity(type, detail, notificationId = null) {
+  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
+    type, detail, notificationId, new Date().toISOString()
+  );
+}
 
-    // ─── Load Notifications ────────────────────
-    async function loadNotifications() {
-      const store = document.getElementById('filter-store').value;
-      const status = document.getElementById('filter-status').value;
-      let url = API + '/api/notifications?limit=50';
-      if (store) url += '&store=' + store;
-      if (status) url += '&status=' + status;
-
-      try {
-        const res = await fetch(url);
-        const data = await res.json();
-        const tbody = document.getElementById('notifications-table');
-
-        if (data.notifications.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" class="empty">No notifications match your filters</td></tr>';
-          return;
-        }
-
-        tbody.innerHTML = data.notifications.map(n => {
-          const responseDisplay = n.customer_response === 'yes' ? '<span style="color:#2dd4bf;font-weight:600">✓ YES</span>'
-            : n.customer_response === 'no' ? '<span style="color:#ef4444;font-weight:600">✗ NO</span>'
-            : n.customer_response === 'stop' ? '<span style="color:#64748b;font-weight:600">STOP</span>'
-            : '<span style="color:#475569">—</span>';
-          return `<tr>
-          <td>
-            <div style="font-weight:600">${n.customer_name}</div>
-            <div class="mono" style="font-size:11px;color:#64748b">${n.phone}</div>
-          </td>
-          <td>${storeDot(n.store)}</td>
-          <td style="color:#94a3b8">${n.scheduled_date || '—'}</td>
-          <td style="color:#94a3b8">${n.time_window || '—'}</td>
-          <td style="color:#94a3b8;font-size:12px">${n.product || '—'}</td>
-          <td>${badge(n.status)}</td>
-          <td>${responseDisplay}</td>
-          <td>
-            ${n.status === 'failed' ? `<button class="btn btn-danger" onclick="retrySend(${n.id})">Retry</button>` : ''}
-            ${n.status === 'pending' ? `<button class="btn btn-outline" onclick="sendOne(${n.id})">Send</button>` : ''}
-          </td>
-        </tr>`}).join('');
-      } catch (e) {
-        console.error('Failed to load notifications:', e);
-      }
-    }
-
-    // ─── Send Actions ──────────────────────────
-    async function sendOne(id) {
-      try {
-        await fetch(API + '/api/notifications/' + id + '/send', { method: 'POST' });
-        showToast('SMS sent successfully');
-        loadNotifications();
-        loadStats();
-        loadActivity();
-      } catch (e) { showToast('Failed to send'); }
-    }
-
-    async function retrySend(id) { await sendOne(id); }
-
-    async function sendAllPending() {
-      try {
-        const res = await fetch(API + '/api/notifications/actions/send-all-pending', { method: 'POST' });
-        const data = await res.json();
-        showToast(`Sent: ${data.sent}, Failed: ${data.failed}`);
-        loadStats();
-        loadActivity();
-      } catch (e) { showToast('Failed to send all'); }
-    }
-
-    // ─── Settings ──────────────────────────────
-    async function loadSettings() {
-      try {
-        const [connRes, tmplRes] = await Promise.all([
-          fetch(API + '/api/connections'),
-          fetch(API + '/api/template'),
-        ]);
-        const conn = await connRes.json();
-        const tmpl = await tmplRes.json();
-
-        document.getElementById('webhook-url').value = conn.spoke.webhookUrl || '—';
-        document.getElementById('spoke-config-status').textContent = conn.spoke.configured ? '✓ Configured' : '✗ Missing API Key';
-        document.getElementById('spoke-config-status').style.color = conn.spoke.configured ? '#2dd4bf' : '#ef4444';
-        document.getElementById('quo-config-status').textContent = conn.quo.configured ? (conn.quo.live ? '✓ Live' : '⚠ Configured (unreachable)') : '✗ Missing API Key';
-        document.getElementById('quo-config-status').style.color = conn.quo.configured ? (conn.quo.live ? '#2dd4bf' : '#fbbf24') : '#ef4444';
-
-        document.getElementById('template-display').textContent = tmpl.body || 'No template set';
-        document.getElementById('template-input').value = tmpl.body || '';
-      } catch (e) {
-        console.error('Failed to load settings:', e);
-      }
-    }
-
-    function toggleTemplateEdit() {
-      const editor = document.getElementById('template-editor');
-      editor.style.display = editor.style.display === 'none' ? '' : 'none';
-    }
-
-    async function saveTemplate() {
-      const body = document.getElementById('template-input').value;
-      try {
-        await fetch(API + '/api/template', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body }),
-        });
-        document.getElementById('template-display').textContent = body;
-        document.getElementById('template-editor').style.display = 'none';
-        showToast('Template saved');
-      } catch (e) { showToast('Failed to save template'); }
-    }
-
-    // ─── Connection Check ──────────────────────
-    async function checkConnections() {
-      try {
-        const res = await fetch(API + '/api/connections');
-        const conn = await res.json();
-
-        const spokeDot = document.getElementById('spoke-dot');
-        const spokeStatus = document.getElementById('spoke-status');
-        spokeDot.className = 'conn-dot ' + (conn.spoke.configured ? 'live' : 'down');
-        spokeStatus.className = 'conn-status ' + (conn.spoke.configured ? 'live' : 'down');
-        spokeStatus.textContent = conn.spoke.configured ? 'Live' : 'Down';
-
-        const quoDot = document.getElementById('quo-dot');
-        const quoStatus = document.getElementById('quo-status');
-        const quoOk = conn.quo.configured && conn.quo.live;
-        quoDot.className = 'conn-dot ' + (quoOk ? 'live' : 'down');
-        quoStatus.className = 'conn-status ' + (quoOk ? 'live' : 'down');
-        quoStatus.textContent = quoOk ? 'Live' : (conn.quo.configured ? 'Error' : 'Down');
-      } catch (e) {
-        console.error('Connection check failed:', e);
-      }
-    }
-
-    // ─── Init ──────────────────────────────────
-    loadStats();
-    loadActivity();
-    checkConnections();
-
-    // Refresh every 30 seconds
-    setInterval(() => {
-      loadStats();
-      loadActivity();
-      checkConnections();
-    }, 30000);
-  </script>
-</body>
-</html>
+module.exports = { handleSpokeWebhook };
