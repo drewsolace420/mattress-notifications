@@ -1,18 +1,20 @@
 /**
  * Spoke Dispatch Webhook Handler
  *
- * Spoke sends these webhook events:
- *   - stop.allocated: When dispatcher clicks "Send route to driver"
- *   - stop.out_for_delivery: When driver starts their route
- *   - stop.attempted_delivery: When delivery status changes
+ * Spoke webhooks strip recipient PII (name, phone, email come as null).
+ * So after receiving a webhook, we call the Spoke REST API to fetch
+ * the full stop details including recipient info.
  *
- * Payload format:
- *   { "type": "stop.allocated", "version": "v0.2b", "created": ..., "data": { ...stop... } }
+ * Spoke REST API: https://api.getcircuit.com/public/v0.2b
+ * Auth: Bearer {SPOKE_API_KEY}
  */
 
 const db = require("../database");
 const { sendSms } = require("../services/quo");
 const { getSmsBody, computeDeliveryWindow, isSendDay, isDeliveryDay } = require("../services/templates");
+const fetch = require("node-fetch");
+
+const SPOKE_API_BASE = "https://api.getcircuit.com/public/v0.2b";
 
 const DEPOT_TO_STORE = {
   richmond: "richmond",
@@ -34,39 +36,74 @@ function resolveStore(depotName) {
 }
 
 /**
+ * Fetch a resource from the Spoke REST API
+ */
+async function spokeApiFetch(resourcePath) {
+  const apiKey = process.env.SPOKE_API_KEY;
+  if (!apiKey) {
+    console.log("[Spoke API] No SPOKE_API_KEY set — cannot fetch");
+    return null;
+  }
+
+  const url = `${SPOKE_API_BASE}/${resourcePath}`;
+  console.log("[Spoke API] Fetching:", url);
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!res.ok) {
+      console.error("[Spoke API] Error:", res.status, res.statusText);
+      const text = await res.text();
+      console.error("[Spoke API] Body:", text.substring(0, 500));
+      return null;
+    }
+
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error("[Spoke API] Fetch error:", err.message);
+    return null;
+  }
+}
+
+/**
  * Main webhook handler
  */
 async function handleSpokeWebhook(payload, headers) {
   const results = { processed: 0, skipped: 0, errors: [] };
 
-  // ─── Spoke Webhook Events (stop.allocated, stop.out_for_delivery, etc.) ───
+  // ─── Spoke Webhook Events ───
   if (payload.type && payload.data) {
     console.log("[Spoke] Event type:", payload.type);
-    console.log("[Spoke] FULL PAYLOAD:", JSON.stringify(payload, null, 2));
 
     if (payload.type === "stop.allocated") {
       try {
         await processSpokeStop(payload.data);
         results.processed++;
       } catch (err) {
-        console.error("[Spoke] Error processing stop.allocated:", err.message, err.stack);
+        console.error("[Spoke] Error:", err.message, err.stack);
         results.errors.push({ error: err.message });
       }
     } else {
-      console.log("[Spoke] Ignoring event type:", payload.type);
+      console.log("[Spoke] Ignoring event:", payload.type);
       results.skipped++;
     }
     return results;
   }
 
-  // ─── Manual/Test webhook (our test format) ───
+  // ─── Manual/Test webhook ───
   if (payload.stop) {
     try {
       await processManualStop(payload.stop);
       results.processed++;
     } catch (err) {
-      console.error("[Spoke] Error processing manual stop:", err.message, err.stack);
-      results.errors.push({ stop: payload.stop?.id, error: err.message });
+      console.error("[Spoke] Error:", err.message, err.stack);
+      results.errors.push({ error: err.message });
     }
     return results;
   }
@@ -78,36 +115,46 @@ async function handleSpokeWebhook(payload, headers) {
         await processManualStop(stop);
         results.processed++;
       } catch (err) {
-        console.error("[Spoke] Error:", err.message);
         results.errors.push({ error: err.message });
       }
     }
     return results;
   }
 
-  console.log("[Spoke] Unrecognized payload:", JSON.stringify(payload).substring(0, 500));
+  console.log("[Spoke] Unrecognized payload:", JSON.stringify(payload).substring(0, 300));
   results.skipped++;
   return results;
 }
 
 /**
- * Process a stop from Spoke's stop.allocated webhook event.
+ * Process a stop.allocated webhook event.
  *
- * Spoke Stop model (from their docs):
- *   id, plan, route { id, title, stopCount, state, driver, plan },
- *   address { address, addressLineOne, addressLineTwo, latitude, longitude },
- *   recipient { name, phone, email },
- *   timing { earliestAttemptTime { hour, minute }, latestAttemptTime { hour, minute }, estimatedAttemptDuration },
- *   notes, driverIdentifier, orderInfo, customProperties, barcodes
+ * The webhook strips recipient PII, so we fetch full details from the REST API.
+ * We also use the ETA timestamps from the webhook for the time window.
  */
-async function processSpokeStop(data) {
-  console.log("[Spoke] Processing stop.allocated...");
-  console.log("[Spoke] Top-level keys:", Object.keys(data));
+async function processSpokeStop(webhookData) {
+  const stopId = webhookData.id; // e.g., "plans/abc123/stops/xyz789"
+  console.log("[Spoke] Processing stop.allocated:", stopId);
+
+  // ─── Fetch full stop from REST API (has recipient info) ───
+  let fullStop = null;
+  if (stopId) {
+    fullStop = await spokeApiFetch(stopId);
+    if (fullStop) {
+      console.log("[Spoke API] Full stop recipient:", JSON.stringify(fullStop.recipient));
+      console.log("[Spoke API] Full stop notes:", fullStop.notes);
+      console.log("[Spoke API] Full stop customProperties:", JSON.stringify(fullStop.customProperties));
+    } else {
+      console.log("[Spoke API] Could not fetch full stop — using webhook data only");
+    }
+  }
+
+  // Merge: prefer REST API data, fall back to webhook data
+  const data = fullStop || webhookData;
+  const webhookEta = webhookData.eta || {};
 
   // ─── Customer info ───
   const recipient = data.recipient || {};
-  console.log("[Spoke] Recipient:", JSON.stringify(recipient));
-
   const customerName =
     recipient.name ||
     recipient.displayName ||
@@ -120,106 +167,144 @@ async function processSpokeStop(data) {
     recipient.mobile ||
     null;
 
-  console.log("[Spoke] Customer:", customerName, "Phone:", phone);
+  console.log("[Spoke] Customer:", customerName, "| Phone:", phone);
 
   if (!phone) {
     console.log("[Spoke] ⚠ No phone number — skipping");
-    logActivity("stop_skipped", `No phone number for ${customerName}`);
+    console.log("[Spoke] Recipient keys:", Object.keys(recipient));
+    logActivity("stop_skipped", `No phone for ${customerName} at ${data.address?.addressLineOne || "unknown address"}`);
     return;
   }
 
   // ─── Address ───
   const addr = data.address || {};
-  console.log("[Spoke] Address object:", JSON.stringify(addr));
-
-  const address =
-    addr.addressLineOne ||
-    addr.address ||
-    addr.formattedAddress ||
-    (typeof data.address === "string" ? data.address : "") ||
-    "";
+  const address = addr.addressLineOne || addr.address || "";
 
   // ─── Scheduled date ───
   let scheduledDate = null;
 
-  // Try route title like "Fri, Feb 28 Route 1"
-  if (data.route?.title) {
-    scheduledDate = parseDateFromRouteTitle(data.route.title);
-    console.log("[Spoke] Date from route title:", data.route.title, "→", scheduledDate);
+  // Try route title like "Sat, Feb 28 Route"
+  const routeData = data.route || webhookData.route || {};
+  if (routeData.title) {
+    scheduledDate = parseDateFromRouteTitle(routeData.title);
+    console.log("[Spoke] Date from route title:", routeData.title, "→", scheduledDate);
   }
-
-  // Fallback to tomorrow
   if (!scheduledDate) {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     scheduledDate = tomorrow.toISOString().split("T")[0];
-    console.log("[Spoke] Using tomorrow as scheduled date:", scheduledDate);
   }
 
-  // ─── Delivery time / window ───
-  const timing = data.timing || {};
-  console.log("[Spoke] Timing:", JSON.stringify(timing));
-
+  // ─── Delivery time window from ETA ───
+  // Spoke provides Unix timestamps (seconds):
+  //   estimatedArrivalAt, estimatedEarliestArrivalAt, estimatedLatestArrivalAt
   let rawDeliveryTime = null;
   let timeWindow = "TBD";
 
-  if (timing.earliestAttemptTime) {
-    const earliest = timing.earliestAttemptTime;
-    const minutes = (earliest.hour || 0) * 60 + (earliest.minute || 0);
-    rawDeliveryTime = `${earliest.hour}:${String(earliest.minute || 0).padStart(2, "0")}`;
-    const window = computeDeliveryWindow(minutes);
+  const etaTimestamp =
+    webhookEta.estimatedEarliestArrivalAt ||
+    webhookEta.estimatedArrivalAt ||
+    data.eta?.estimatedEarliestArrivalAt ||
+    data.eta?.estimatedArrivalAt ||
+    null;
+
+  if (etaTimestamp) {
+    // Convert Unix timestamp to EST time
+    const etaDate = new Date(etaTimestamp * 1000);
+    const estString = etaDate.toLocaleString("en-US", { timeZone: "America/New_York" });
+    const estDate = new Date(estString);
+    const hours = estDate.getHours();
+    const minutes = estDate.getMinutes();
+    const totalMinutes = hours * 60 + minutes;
+
+    rawDeliveryTime = `${hours}:${String(minutes).padStart(2, "0")}`;
+    const window = computeDeliveryWindow(totalMinutes);
     timeWindow = window.windowText;
-    console.log("[Spoke] Window from timing:", rawDeliveryTime, "→", timeWindow);
-  } else if (data.eta?.estimatedArrivalTimestamp) {
-    const eta = new Date(data.eta.estimatedArrivalTimestamp * 1000);
-    rawDeliveryTime = `${eta.getHours()}:${String(eta.getMinutes()).padStart(2, "0")}`;
-    const window = computeDeliveryWindow(rawDeliveryTime);
-    timeWindow = window.windowText;
-    console.log("[Spoke] Window from ETA:", rawDeliveryTime, "→", timeWindow);
+    console.log("[Spoke] ETA timestamp:", etaTimestamp, "→ EST:", rawDeliveryTime, "→ Window:", timeWindow);
+  } else {
+    // Try timing field
+    const timing = data.timing || {};
+    if (timing.earliestAttemptTime) {
+      const earliest = timing.earliestAttemptTime;
+      const totalMinutes = (earliest.hour || 0) * 60 + (earliest.minute || 0);
+      rawDeliveryTime = `${earliest.hour}:${String(earliest.minute || 0).padStart(2, "0")}`;
+      const window = computeDeliveryWindow(totalMinutes);
+      timeWindow = window.windowText;
+    }
   }
+
+  console.log("[Spoke] Time window:", timeWindow);
 
   // ─── Product / notes ───
   const product =
-    data.orderInfo?.products ||
     data.notes ||
+    data.orderInfo?.products?.join(", ") ||
     (data.customProperties ? JSON.stringify(data.customProperties) : "") ||
     "";
 
   // ─── Driver ───
-  const driver =
-    data.route?.driver?.displayName ||
-    data.route?.driver?.name ||
-    data.driverIdentifier ||
-    "Your driver";
+  let driver = "Your driver";
+  const driverRef = routeData.driver; // e.g., "drivers/4ccrTaAFAa1wol3twCY5"
+
+  if (typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
+    // Fetch driver name from API
+    const driverData = await spokeApiFetch(driverRef);
+    if (driverData) {
+      driver = driverData.displayName || driverData.name || "Your driver";
+      console.log("[Spoke] Driver:", driver);
+    }
+  } else if (typeof driverRef === "object" && driverRef) {
+    driver = driverRef.displayName || driverRef.name || "Your driver";
+  }
 
   // ─── Store/depot ───
-  const store = resolveStore(
-    data.route?.depot?.name ||
-    data.depot?.name ||
-    data.depot ||
-    ""
-  );
+  let store = "unknown";
+
+  // Try to get depot from driver's depots
+  if (typeof driverRef === "string" && driverRef.startsWith("drivers/")) {
+    const driverData = await spokeApiFetch(driverRef);
+    if (driverData?.depots?.[0]) {
+      const depotRef = driverData.depots[0]; // e.g., "depots/HSlWAAgu1h1M2Ln8TGGd"
+      const depotData = await spokeApiFetch(depotRef);
+      if (depotData) {
+        store = resolveStore(depotData.name || depotData.title || "");
+        console.log("[Spoke] Store from depot:", store);
+      }
+    }
+  }
+
+  // Fallback: extract depot from webAppLink
+  if (store === "unknown" && webhookData.webAppLink) {
+    const depotMatch = webhookData.webAppLink.match(/depotId=([^&]+)/);
+    if (depotMatch) {
+      const depotData = await spokeApiFetch(`depots/${depotMatch[1]}`);
+      if (depotData) {
+        store = resolveStore(depotData.name || depotData.title || "");
+        console.log("[Spoke] Store from webAppLink depot:", store);
+      }
+    }
+  }
 
   // ─── Dedup ───
-  const spokeStopId = data.id || null;
-  const spokeRouteId = data.route?.id || null;
+  const spokeStopId = stopId || null;
+  const spokeRouteId = routeData.id || null;
 
   if (spokeStopId) {
     const existing = db.prepare("SELECT id FROM notifications WHERE spoke_stop_id = ?").get(spokeStopId);
     if (existing) {
-      console.log("[Spoke] Duplicate stop", spokeStopId, "— skipping");
+      console.log("[Spoke] Duplicate stop — skipping");
       return;
     }
   }
 
-  // ─── Validate delivery day ───
+  // ─── Validate delivery day (Tue–Sat) ───
   const deliveryDate = new Date(scheduledDate + "T12:00:00");
   if (!isDeliveryDay(deliveryDate)) {
-    console.log("[Spoke]", scheduledDate, "is not a delivery day (Tue-Sat) — skipping");
+    console.log("[Spoke]", scheduledDate, "is not a delivery day — skipping");
     return;
   }
 
-  // ─── Insert ───
+  // ─── Insert notification ───
   console.log("[Spoke] Inserting:", customerName, "|", store, "|", scheduledDate, "|", timeWindow);
 
   const result = db
@@ -279,7 +364,7 @@ async function processManualStop(stop) {
   if (spokeStopId) {
     const existing = db.prepare("SELECT id FROM notifications WHERE spoke_stop_id = ?").get(spokeStopId);
     if (existing) {
-      console.log("[Spoke] Duplicate stop", spokeStopId, "— skipping");
+      console.log("[Spoke] Duplicate stop — skipping");
       return;
     }
   }
@@ -308,7 +393,7 @@ async function processManualStop(stop) {
 }
 
 /**
- * Parse date from Spoke route title like "Fri, Feb 28 Route 1"
+ * Parse date from Spoke route title like "Sat, Feb 28 Route"
  */
 function parseDateFromRouteTitle(title) {
   if (!title) return null;
