@@ -164,23 +164,71 @@ app.put("/api/template", (req, res) => {
 
 // ─── Activity Log API ────────────────────────────────────
 app.get("/api/activity", (req, res) => {
-  const { limit = 30 } = req.query;
-  const logs = db.prepare("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?").all(Number(limit));
+  const { limit = 30, hours } = req.query;
+  let logs;
+  if (hours) {
+    const cutoff = new Date(Date.now() - Number(hours) * 60 * 60 * 1000).toISOString();
+    logs = db.prepare("SELECT * FROM activity_log WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?").all(cutoff, Number(limit));
+  } else {
+    logs = db.prepare("SELECT * FROM activity_log ORDER BY created_at DESC LIMIT ?").all(Number(limit));
+  }
   res.json(logs);
 });
 
 // ─── Stats API ───────────────────────────────────────────
 app.get("/api/stats", (req, res) => {
-  const today = new Date().toISOString().split("T")[0];
+  const now = new Date();
+  const estNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const today = estNow.toISOString().split("T")[0];
+
+  // Tomorrow's date
+  const tomorrow = new Date(estNow);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toISOString().split("T")[0];
+
+  // Next delivery date (skip Sun/Mon)
+  let nextDelivery = new Date(estNow);
+  nextDelivery.setDate(nextDelivery.getDate() + 1);
+  while (nextDelivery.getDay() === 0 || nextDelivery.getDay() === 1) {
+    nextDelivery.setDate(nextDelivery.getDate() + 1);
+  }
+  const nextDeliveryStr = nextDelivery.toISOString().split("T")[0];
+
   const stats = {
-    total: db.prepare("SELECT COUNT(*) as count FROM notifications").get().count,
-    sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'sent'").get().count,
-    pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'pending'").get().count,
-    failed: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'failed'").get().count,
-    delivered: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'delivered'").get().count,
-    today: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(today).count,
-    confirmedYes: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'yes'").get().count,
-    declinedNo: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'no'").get().count,
+    // All-time totals
+    allTime: {
+      total: db.prepare("SELECT COUNT(*) as count FROM notifications").get().count,
+      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'sent'").get().count,
+      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'pending'").get().count,
+      failed: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'failed'").get().count,
+      delivered: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE status = 'delivered'").get().count,
+      confirmedYes: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'yes'").get().count,
+      declinedNo: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE customer_response = 'no'").get().count,
+    },
+    // Today's deliveries (scheduled_date = today)
+    today: {
+      date: today,
+      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(today).count,
+      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'sent'").get(today).count,
+      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(today).count,
+      failed: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'failed'").get(today).count,
+      delivered: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'delivered'").get(today).count,
+      confirmedYes: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'yes'").get(today).count,
+      declinedNo: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'no'").get(today).count,
+    },
+    // Tomorrow's queue
+    tomorrow: {
+      date: tomorrowStr,
+      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(tomorrowStr).count,
+      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(tomorrowStr).count,
+      sent: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'sent'").get(tomorrowStr).count,
+    },
+    // Next delivery date (in case tomorrow is Sun/Mon)
+    nextDelivery: {
+      date: nextDeliveryStr,
+      total: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(nextDeliveryStr).count,
+      pending: db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(nextDeliveryStr).count,
+    },
     scheduler: getSchedulerStatus(),
   };
   res.json(stats);
