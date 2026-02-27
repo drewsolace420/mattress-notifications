@@ -392,6 +392,14 @@ async function processSpokeStop(webhookData) {
 async function processDeliveryComplete(webhookData) {
   const stopId = webhookData.id;
   console.log("[Spoke] Processing stop.attempted_delivery:", stopId);
+  console.log("[Spoke] Full webhook data keys:", Object.keys(webhookData));
+  console.log("[Spoke] deliveryInfo:", JSON.stringify(webhookData.deliveryInfo));
+  console.log("[Spoke] activity:", JSON.stringify(webhookData.activity));
+  console.log("[Spoke] status:", webhookData.status);
+  console.log("[Spoke] type:", webhookData.type);
+  console.log("[Spoke] orderInfo:", JSON.stringify(webhookData.orderInfo));
+  // Log any other fields that might distinguish "next in queue" vs "completed"
+  console.log("[Spoke] Raw payload (first 1000 chars):", JSON.stringify(webhookData).substring(0, 1000));
 
   // ─── Skip depot start/end stops ───
   const stopType = webhookData.type;
@@ -404,10 +412,20 @@ async function processDeliveryComplete(webhookData) {
   const deliveryInfo = webhookData.deliveryInfo || webhookData;
   const succeeded = deliveryInfo.succeeded === true;
   const attempted = deliveryInfo.attempted === true;
+  console.log("[Spoke] succeeded:", succeeded, "| attempted:", attempted, "| deliveryInfo.succeeded:", deliveryInfo.succeeded, "| deliveryInfo.attempted:", deliveryInfo.attempted);
 
   if (!succeeded && attempted) {
     console.log("[Spoke] Delivery attempted but not successful — skipping review request");
     logActivity("delivery_failed", `Delivery attempt failed for stop ${stopId}`);
+    return;
+  }
+
+  // Only send review if delivery was explicitly marked as succeeded
+  // This filters out "next in queue" events that Spoke mislabels as stop.attempted_delivery
+  if (!succeeded) {
+    console.log("[Spoke] ⚠ succeeded is not true — skipping review. This may be a 'next in queue' event.");
+    console.log("[Spoke] deliveryInfo was:", JSON.stringify(webhookData.deliveryInfo));
+    logActivity("delivery_skipped", `Skipped review for stop ${stopId} — succeeded not true`);
     return;
   }
 
@@ -417,22 +435,16 @@ async function processDeliveryComplete(webhookData) {
     notification = db.prepare("SELECT * FROM notifications WHERE spoke_stop_id = ?").get(stopId);
   }
 
-  // ─── Fetch full stop from API (needed for fallback or phone lookup) ───
-  let fullStop = null;
-  if (!notification && stopId) {
+  // ─── No DB match — fetch from API and send directly ───
+  if (!notification) {
     console.log("[Spoke] No matching notification — fetching from Spoke API for direct review send");
-    fullStop = await spokeApiFetch(stopId);
+    const fullStop = stopId ? await spokeApiFetch(stopId) : null;
 
-    if (fullStop?.recipient?.phone) {
-      const cleanedPhone = cleanPhone(fullStop.recipient.phone);
-      notification = db.prepare(
-        "SELECT * FROM notifications WHERE phone = ? ORDER BY scheduled_date DESC LIMIT 1"
-      ).get(cleanedPhone);
+    if (!fullStop) {
+      console.log("[Spoke] Could not fetch stop from API — skipping");
+      return;
     }
-  }
 
-  // ─── If STILL no notification, send review directly from API data ───
-  if (!notification && fullStop) {
     const recipient = fullStop.recipient || {};
     const phone = recipient.phone || recipient.phoneNumber || null;
     const customerName = recipient.name || "Customer";
@@ -445,7 +457,7 @@ async function processDeliveryComplete(webhookData) {
     // Resolve store from sale number
     const saleNumber = extractSaleNumber(fullStop.customProperties);
     const store = resolveStoreFromSaleNumber(saleNumber);
-    console.log("[Spoke] Direct review — Customer:", customerName, "| Sale#:", saleNumber, "→ Store:", store);
+    console.log("[Spoke] Direct review — Customer:", customerName, "| Phone:", phone, "| Sale#:", saleNumber, "→ Store:", store);
 
     if (store === "other") {
       console.log("[Spoke] Store is 'other' (sale prefix 1) — skipping review");
@@ -481,11 +493,6 @@ async function processDeliveryComplete(webhookData) {
       console.error("[Spoke] Failed to send direct review:", err.message);
       logActivity("review_request_failed", `Failed direct review for ${customerName}: ${err.message}`);
     }
-    return;
-  }
-
-  if (!notification) {
-    console.log("[Spoke] Could not match delivery completion to any data — skipping");
     return;
   }
 
