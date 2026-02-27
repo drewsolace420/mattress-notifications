@@ -9,7 +9,7 @@ const { sendSms, getQuoStatus } = require("./services/quo");
 const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates");
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
-const { processRescheduleMessage, startReschedule, completeReschedule } = require("./services/rescheduler");
+const { processRescheduleMessage, startReschedule, completeReschedule } = require("./services/reschedule");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
