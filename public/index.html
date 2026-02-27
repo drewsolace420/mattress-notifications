@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Mattress Overstock — Delivery Notifications</title>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'DM Sans', sans-serif; background: #080c14; color: #e2e8f0; min-height: 100vh; }
@@ -145,6 +146,7 @@
   <nav>
     <button class="active" data-tab="overview">Overview</button>
     <button data-tab="notifications">Notifications</button>
+    <button data-tab="reports">Reports</button>
     <button data-tab="settings">Settings</button>
   </nav>
 
@@ -302,6 +304,89 @@
 
     <!-- Settings Tab -->
     <div id="tab-settings" style="display:none">
+
+    <!-- Reports Tab -->
+    <div id="tab-reports" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px">Reports & Analytics</h2>
+          <p style="color:#64748b;font-size:13px;margin-top:4px">Performance metrics across all stores</p>
+        </div>
+        <select id="chart-days" onchange="loadCharts()" style="padding:8px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#94a3b8;font-size:13px;font-family:inherit;cursor:pointer">
+          <option value="7">Last 7 days</option>
+          <option value="14" selected>Last 14 days</option>
+          <option value="30">Last 30 days</option>
+        </select>
+      </div>
+
+      <!-- KPI Row -->
+      <div class="stats" id="report-kpis">
+        <div class="stat-card">
+          <div class="stat-label">Confirmation Rate</div>
+          <div class="stat-value" id="kpi-confirm-rate" style="color:#2dd4bf">—</div>
+          <div class="stat-sub" id="kpi-confirm-sub">of sent messages</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Decline Rate</div>
+          <div class="stat-value" id="kpi-decline-rate" style="color:#ef4444">—</div>
+          <div class="stat-sub" id="kpi-decline-sub">need rescheduling</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Reviews Sent</div>
+          <div class="stat-value" id="kpi-reviews" style="color:#fbbf24">—</div>
+          <div class="stat-sub" id="kpi-reviews-sub">Google review requests</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">No Reply</div>
+          <div class="stat-value" id="kpi-noreply" style="color:#64748b">—</div>
+          <div class="stat-sub" id="kpi-noreply-sub">no response yet</div>
+        </div>
+      </div>
+
+      <!-- Charts Row 1: Volume + Response Donut -->
+      <div class="grid-2">
+        <div class="panel" style="min-height:320px">
+          <h3>Daily Volume</h3>
+          <canvas id="chart-daily" height="260"></canvas>
+        </div>
+        <div class="panel" style="min-height:320px">
+          <h3>Customer Responses</h3>
+          <canvas id="chart-responses" height="260"></canvas>
+        </div>
+      </div>
+
+      <!-- Charts Row 2: Store Breakdown + Time Window -->
+      <div class="grid-2">
+        <div class="panel" style="min-height:320px">
+          <h3>Deliveries by Store</h3>
+          <canvas id="chart-stores" height="260"></canvas>
+        </div>
+        <div class="panel" style="min-height:320px">
+          <h3>Delivery Time Windows</h3>
+          <canvas id="chart-windows" height="260"></canvas>
+        </div>
+      </div>
+
+      <!-- Store Performance Table -->
+      <div class="panel">
+        <h3>Store Performance</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Store</th>
+              <th>Deliveries</th>
+              <th>Confirmed</th>
+              <th>Declined</th>
+              <th>Confirm %</th>
+              <th>Reviews Sent</th>
+            </tr>
+          </thead>
+          <tbody id="store-perf-table">
+            <tr><td colspan="6" class="loading">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
       <h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Configuration</h2>
 
       <div class="panel">
@@ -357,6 +442,7 @@
         document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none');
         document.getElementById('tab-' + btn.dataset.tab).style.display = '';
         if (btn.dataset.tab === 'notifications') loadNotifications();
+        if (btn.dataset.tab === 'reports') loadCharts();
         if (btn.dataset.tab === 'settings') loadSettings();
       });
     });
@@ -651,6 +737,235 @@
         quoStatus.textContent = quoOk ? 'Live' : (conn.quo.configured ? 'Error' : 'Down');
       } catch (e) {
         console.error('Connection check failed:', e);
+      }
+    }
+
+    // ─── Charts / Reports ────────────────────
+    const chartDefaults = {
+      color: '#94a3b8',
+      borderColor: '#1e293b',
+      font: { family: "'DM Sans', sans-serif" },
+    };
+    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.borderColor = '#1e293b22';
+    Chart.defaults.font.family = "'DM Sans', sans-serif";
+
+    let dailyChart, responsesChart, storesChart, windowsChart;
+
+    function destroyCharts() {
+      [dailyChart, responsesChart, storesChart, windowsChart].forEach(c => { if (c) c.destroy(); });
+    }
+
+    async function loadCharts() {
+      const days = document.getElementById('chart-days').value;
+      try {
+        const [dailyRes, responseRes, storeRes, windowRes] = await Promise.all([
+          fetch(API + '/api/charts/daily?days=' + days),
+          fetch(API + '/api/charts/responses'),
+          fetch(API + '/api/charts/stores'),
+          fetch(API + '/api/charts/time-windows'),
+        ]);
+        const daily = await dailyRes.json();
+        const responses = await responseRes.json();
+        const stores = await storeRes.json();
+        const windows = await windowRes.json();
+
+        // ─── KPIs ───
+        const confirmRate = responses.total > 0 ? Math.round((responses.yes / responses.total) * 100) : 0;
+        const declineRate = responses.total > 0 ? Math.round((responses.no / responses.total) * 100) : 0;
+        const noReplyRate = responses.total > 0 ? Math.round((responses.noReply / responses.total) * 100) : 0;
+        document.getElementById('kpi-confirm-rate').textContent = confirmRate + '%';
+        document.getElementById('kpi-confirm-sub').textContent = `${responses.yes} of ${responses.total} sent`;
+        document.getElementById('kpi-decline-rate').textContent = declineRate + '%';
+        document.getElementById('kpi-decline-sub').textContent = `${responses.no} need rescheduling`;
+        document.getElementById('kpi-reviews').textContent = responses.reviewsSent;
+        document.getElementById('kpi-reviews-sub').textContent = 'Google review requests';
+        document.getElementById('kpi-noreply').textContent = noReplyRate + '%';
+        document.getElementById('kpi-noreply-sub').textContent = `${responses.noReply} no response`;
+
+        destroyCharts();
+
+        // ─── Daily Volume Chart (Bar) ───
+        const dailyLabels = daily.map(d => {
+          const dt = new Date(d.date + 'T12:00:00');
+          return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        });
+        const dailyCtx = document.getElementById('chart-daily').getContext('2d');
+        dailyChart = new Chart(dailyCtx, {
+          type: 'bar',
+          data: {
+            labels: dailyLabels,
+            datasets: [
+              {
+                label: 'Confirmed',
+                data: daily.map(d => d.confirmed),
+                backgroundColor: '#2dd4bf',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+              {
+                label: 'Declined',
+                data: daily.map(d => d.declined),
+                backgroundColor: '#ef4444',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+              {
+                label: 'No Reply',
+                data: daily.map(d => d.total - d.confirmed - d.declined),
+                backgroundColor: '#334155',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } },
+            },
+            scales: {
+              x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 } } },
+              y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#1e293b44' } },
+            },
+          },
+        });
+
+        // ─── Response Donut ───
+        const respCtx = document.getElementById('chart-responses').getContext('2d');
+        responsesChart = new Chart(respCtx, {
+          type: 'doughnut',
+          data: {
+            labels: ['Confirmed (YES)', 'Declined (NO)', 'Opted Out (STOP)', 'No Reply'],
+            datasets: [{
+              data: [responses.yes, responses.no, responses.stop, responses.noReply],
+              backgroundColor: ['#2dd4bf', '#ef4444', '#64748b', '#334155'],
+              borderWidth: 0,
+              hoverOffset: 6,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '62%',
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 10, padding: 14, font: { size: 11 } } },
+              tooltip: {
+                callbacks: {
+                  label: function(ctx) {
+                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                    const pct = total > 0 ? Math.round((ctx.raw / total) * 100) : 0;
+                    return ` ${ctx.label}: ${ctx.raw} (${pct}%)`;
+                  }
+                }
+              }
+            },
+          },
+        });
+
+        // ─── Store Breakdown (Horizontal Bar) ───
+        const storeCtx = document.getElementById('chart-stores').getContext('2d');
+        const storeLabels = stores.map(s => storeNames[s.store] || s.store);
+        const storeColorList = stores.map(s => storeColors[s.store] || '#64748b');
+        storesChart = new Chart(storeCtx, {
+          type: 'bar',
+          data: {
+            labels: storeLabels,
+            datasets: [
+              {
+                label: 'Confirmed',
+                data: stores.map(s => s.confirmed),
+                backgroundColor: '#2dd4bf',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+              {
+                label: 'Declined',
+                data: stores.map(s => s.declined),
+                backgroundColor: '#ef4444',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+              {
+                label: 'Other',
+                data: stores.map(s => s.total - s.confirmed - s.declined),
+                backgroundColor: '#334155',
+                borderRadius: 4,
+                borderSkipped: false,
+              },
+            ],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } },
+            },
+            scales: {
+              x: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#1e293b44' } },
+              y: { stacked: true, grid: { display: false }, ticks: { font: { size: 12, weight: 600 } } },
+            },
+          },
+        });
+
+        // ─── Time Windows (Polar Area) ───
+        const winCtx = document.getElementById('chart-windows').getContext('2d');
+        const winColors = ['#2dd4bf', '#818cf8', '#fb923c', '#f472b6', '#a3e635', '#38bdf8', '#c084fc', '#fbbf24', '#ef4444', '#64748b'];
+        windowsChart = new Chart(winCtx, {
+          type: 'polarArea',
+          data: {
+            labels: windows.map(w => w.time_window.replace('between ', '')),
+            datasets: [{
+              data: windows.map(w => w.count),
+              backgroundColor: windows.map((_, i) => winColors[i % winColors.length] + '99'),
+              borderColor: windows.map((_, i) => winColors[i % winColors.length]),
+              borderWidth: 1.5,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } },
+            },
+            scales: {
+              r: { ticks: { display: false }, grid: { color: '#1e293b44' }, beginAtZero: true },
+            },
+          },
+        });
+
+        // ─── Store Performance Table ───
+        const tbody = document.getElementById('store-perf-table');
+        if (stores.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No store data yet</td></tr>';
+        } else {
+          tbody.innerHTML = stores.map(s => {
+            const name = storeNames[s.store] || s.store;
+            const color = storeColors[s.store] || '#64748b';
+            const confirmPct = s.total > 0 ? Math.round((s.confirmed / s.total) * 100) : 0;
+            const barWidth = Math.max(confirmPct, 4);
+            return `<tr>
+              <td><span class="store-dot"><span style="background:${color}"></span>${name}</span></td>
+              <td style="font-weight:600;font-family:'JetBrains Mono',monospace">${s.total}</td>
+              <td style="color:#2dd4bf;font-weight:600">${s.confirmed}</td>
+              <td style="color:#ef4444;font-weight:600">${s.declined}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <div style="flex:1;height:6px;background:#1e293b;border-radius:3px;overflow:hidden;max-width:80px">
+                    <div style="width:${barWidth}%;height:100%;background:${confirmPct >= 70 ? '#2dd4bf' : confirmPct >= 40 ? '#fbbf24' : '#ef4444'};border-radius:3px"></div>
+                  </div>
+                  <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace">${confirmPct}%</span>
+                </div>
+              </td>
+              <td style="color:#fbbf24;font-weight:600">${s.reviews_sent}</td>
+            </tr>`;
+          }).join('');
+        }
+
+      } catch (e) {
+        console.error('Failed to load charts:', e);
       }
     }
 
