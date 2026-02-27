@@ -9,7 +9,8 @@ const { sendSms, getQuoStatus } = require("./services/quo");
 const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates");
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
-const { processRescheduleMessage, startReschedule, completeReschedule } = require("./services/reschedule");
+const { processRescheduleMessage, startReschedule, completeReschedule } = require("./services/rescheduler");
+const { syncRoutes, startAutoSync } = require("./services/sync");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -547,6 +548,55 @@ app.post("/api/scheduler/summary-now", async (req, res) => {
   }
 });
 
+// Manual route sync — pull latest from Spoke
+app.post("/api/sync", async (req, res) => {
+  try {
+    const results = await syncRoutes();
+    res.json({ success: true, ...results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restore notifications from backup
+app.post("/api/restore", express.json({ limit: "5mb" }), (req, res) => {
+  try {
+    const notifications = req.body.notifications || req.body;
+    if (!Array.isArray(notifications)) {
+      return res.status(400).json({ error: "Expected { notifications: [...] } or an array" });
+    }
+
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO notifications
+      (customer_name, phone, store, address, scheduled_date, time_window, raw_delivery_time,
+       product, driver, status, sent_at, quo_message_id, spoke_stop_id, spoke_route_id,
+       customer_response, response_at, error_message, retry_count,
+       created_at, updated_at, review_sent_at, conversation_state, reschedule_count, rescheduled_from)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    let restored = 0;
+    for (const n of notifications) {
+      try {
+        insert.run(
+          n.customer_name, n.phone, n.store, n.address, n.scheduled_date, n.time_window, n.raw_delivery_time,
+          n.product, n.driver, n.status, n.sent_at, n.quo_message_id, n.spoke_stop_id, n.spoke_route_id,
+          n.customer_response, n.response_at, n.error_message, n.retry_count || 0,
+          n.created_at, n.updated_at, n.review_sent_at, n.conversation_state || "none", n.reschedule_count || 0, n.rescheduled_from
+        );
+        restored++;
+      } catch (err) {
+        console.log("[Restore] Skipped:", n.customer_name, err.message);
+      }
+    }
+
+    logActivity("data_restored", `Restored ${restored} notifications from backup`);
+    res.json({ success: true, restored });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Catch-all: serve dashboard ──────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../public/index.html"));
@@ -577,6 +627,7 @@ app.listen(PORT, () => {
 ║   Dashboard:     http://localhost:${PORT}                    ║
 ║                                                           ║
 ║   SCHEDULE: 6 PM EST Mon–Fri (for Tue–Sat deliveries)    ║
+║   SYNC:     Every 15 min, 8 AM – 6 PM EST               ║
 ║                                                           ║
 ║   Spoke API:   ${process.env.SPOKE_API_KEY ? "✓ Configured" : "✗ Missing — set SPOKE_API_KEY"}       ║
 ║   Quo API:     ${process.env.QUO_API_KEY ? "✓ Configured" : "✗ Missing — set QUO_API_KEY"}         ║
@@ -585,4 +636,7 @@ app.listen(PORT, () => {
 
   // Start the 6 PM EST daily scheduler
   startScheduler();
+
+  // Start auto-sync (every 15 min, 8 AM – 6 PM EST)
+  startAutoSync();
 });
