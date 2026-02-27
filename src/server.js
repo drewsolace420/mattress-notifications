@@ -6,7 +6,7 @@ const db = require("./database");
 const { handleSpokeWebhook } = require("./webhooks/spoke");
 const { sendSms, getQuoStatus } = require("./services/quo");
 const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates");
-const { startScheduler, executeDailySend, getSchedulerStatus } = require("./services/scheduler");
+const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -287,7 +287,7 @@ app.post("/api/quo/webhook", async (req, res) => {
     if (type === "message.received" || event.data?.object?.direction === "incoming") {
       const message = event.data?.object || event.data || {};
       const from = message.from || message.identifier || "";
-      const body = (message.body || message.content || "").trim().toUpperCase();
+      const body = (message.text || message.body || message.content || "").trim().toUpperCase();
 
       if (!from || !body) {
         return res.status(200).json({ received: true });
@@ -315,6 +315,15 @@ app.post("/api/quo/webhook", async (req, res) => {
 
         logActivity("customer_confirmed", `${notification.customer_name} replied YES — delivery confirmed`, notification.id);
         console.log(`[Quo Webhook] ${notification.customer_name} confirmed delivery (YES)`);
+
+        // Auto-reply confirmation
+        try {
+          await sendSms(cleanFrom, `Thank you! Your delivery is confirmed for tomorrow ${notification.time_window}. See you then!`);
+          logActivity("auto_reply_sent", `Confirmation reply sent to ${notification.customer_name}`, notification.id);
+        } catch (e) {
+          console.error("[Quo Webhook] Failed to send YES auto-reply:", e.message);
+        }
+
       } else if (body === "NO") {
         db.prepare(
           "UPDATE notifications SET customer_response = 'no', response_at = ?, updated_at = ? WHERE id = ?"
@@ -322,12 +331,29 @@ app.post("/api/quo/webhook", async (req, res) => {
 
         logActivity("customer_declined", `${notification.customer_name} replied NO — needs rescheduling`, notification.id);
         console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO) — needs follow-up`);
+
+        // Auto-reply reschedule notice
+        try {
+          await sendSms(cleanFrom, `No problem! A member of our team will text you tomorrow after 10 AM to reschedule your delivery. Thank you!`);
+          logActivity("auto_reply_sent", `Reschedule reply sent to ${notification.customer_name}`, notification.id);
+        } catch (e) {
+          console.error("[Quo Webhook] Failed to send NO auto-reply:", e.message);
+        }
+
       } else if (body === "STOP") {
         db.prepare(
           "UPDATE notifications SET customer_response = 'stop', updated_at = ? WHERE id = ?"
         ).run(new Date().toISOString(), notification.id);
 
         logActivity("customer_optout", `${notification.customer_name} opted out (STOP)`, notification.id);
+
+        // Auto-reply opt-out confirmation
+        try {
+          await sendSms(cleanFrom, `You've been opted out of delivery notifications from Mattress Overstock. Thank you!`);
+          logActivity("auto_reply_sent", `Opt-out reply sent to ${notification.customer_name}`, notification.id);
+        } catch (e) {
+          console.error("[Quo Webhook] Failed to send STOP auto-reply:", e.message);
+        }
       }
     }
 
@@ -348,6 +374,16 @@ app.post("/api/scheduler/send-now", async (req, res) => {
   try {
     const results = await executeDailySend();
     res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual trigger for the 9 PM staff summary
+app.post("/api/scheduler/summary-now", async (req, res) => {
+  try {
+    await executeStaffSummary();
+    res.json({ success: true, message: "Staff summary sent" });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
