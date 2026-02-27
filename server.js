@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mattress Overstock — Delivery Notifications</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #080c14; color: #e2e8f0; min-height: 100vh; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+
+    /* Header */
+    header { border-bottom: 1px solid #1e293b; padding: 16px 28px; display: flex; align-items: center; justify-content: space-between; background: #0b1120; }
+    .logo { display: flex; align-items: center; gap: 14px; }
+    .logo-icon { width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, #2dd4bf, #818cf8); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: #080c14; }
+    .logo-text h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
+    .logo-text span { font-size: 11px; color: #64748b; letter-spacing: 0.5px; }
+    .connections { display: flex; gap: 12px; }
+    .conn-badge { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 8px; background: #0f172a; border: 1px solid #1e293b; font-size: 12px; }
+    .conn-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .conn-dot.live { background: #2dd4bf; animation: pulse 2s infinite; }
+    .conn-dot.down { background: #ef4444; }
+    .conn-label { color: #94a3b8; font-weight: 500; }
+    .conn-status { font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .conn-status.live { color: #2dd4bf; }
+    .conn-status.down { color: #ef4444; }
+
+    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(45,212,191,0.4); } 50% { box-shadow: 0 0 0 6px rgba(45,212,191,0); } }
+
+    /* Nav */
+    nav { border-bottom: 1px solid #1e293b; padding: 0 28px; background: #0b1120; display: flex; }
+    nav button { padding: 14px 22px; font-size: 13px; font-weight: 600; color: #64748b; background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer; letter-spacing: 0.2px; transition: all 0.2s; font-family: inherit; }
+    nav button.active { color: #2dd4bf; border-bottom-color: #2dd4bf; }
+    nav button:hover { color: #94a3b8; }
+
+    /* Main */
+    main { padding: 24px 28px; max-width: 1200px; margin: 0 auto; }
+
+    /* Stat Cards */
+    .stats { display: flex; gap: 14px; margin-bottom: 28px; flex-wrap: wrap; }
+    .stat-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px 22px; flex: 1; min-width: 140px; }
+    .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: #64748b; margin-bottom: 8px; font-weight: 600; }
+    .stat-value { font-size: 32px; font-weight: 700; line-height: 1; font-family: 'JetBrains Mono', monospace; }
+    .stat-sub { font-size: 11px; color: #475569; margin-top: 6px; }
+
+    /* Panel */
+    .panel { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+    .panel h3 { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: #94a3b8; margin-bottom: 14px; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { padding: 12px 16px; text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #64748b; border-bottom: 1px solid #1e293b; }
+    td { padding: 14px 16px; border-bottom: 1px solid #1e293b22; }
+    tr:hover { background: #1e293b33; }
+
+    /* Badge */
+    .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+    .badge-sent { color: #2dd4bf; background: rgba(45,212,191,0.12); border: 1px solid rgba(45,212,191,0.13); }
+    .badge-pending { color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.13); }
+    .badge-failed { color: #ef4444; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.13); }
+    .badge-delivered { color: #818cf8; background: rgba(129,140,248,0.12); border: 1px solid rgba(129,140,248,0.13); }
+
+    /* Store dot */
+    .store-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #94a3b8; }
+    .store-dot span { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+
+    /* Buttons */
+    .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.2s; font-family: inherit; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: linear-gradient(135deg, #2dd4bf, #14b8a6); color: #042f2e; }
+    .btn-outline { background: transparent; border: 1px solid #2dd4bf; color: #2dd4bf; padding: 5px 12px; font-size: 11px; }
+    .btn-danger { background: transparent; border: 1px solid #ef4444; color: #ef4444; padding: 5px 12px; font-size: 11px; }
+
+    /* Activity log */
+    .log-entry { padding: 10px 0; border-bottom: 1px solid #1e293b22; display: flex; gap: 12px; align-items: flex-start; }
+    .log-dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
+    .log-event { font-size: 12px; font-weight: 600; color: #cbd5e1; }
+    .log-time { font-size: 11px; color: #475569; font-family: 'JetBrains Mono', monospace; }
+    .log-detail { font-size: 12px; color: #64748b; margin-top: 2px; }
+
+    /* Grid */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+    /* Workflow */
+    .workflow { display: flex; align-items: center; justify-content: center; gap: 0; flex-wrap: wrap; padding: 10px 0; }
+    .workflow-step { text-align: center; padding: 14px 16px; background: #1e293b44; border-radius: 10px; border: 1px solid #1e293b; min-width: 120px; }
+    .workflow-step .icon { font-size: 24px; margin-bottom: 6px; }
+    .workflow-step .label { font-size: 12px; font-weight: 700; color: #e2e8f0; }
+    .workflow-step .sub { font-size: 10px; color: #64748b; margin-top: 2px; }
+    .workflow-arrow { width: 40px; height: 2px; background: linear-gradient(90deg, #2dd4bf44, #818cf844); margin: 0 -2px; }
+
+    /* Toast */
+    .toast { position: fixed; top: 20px; right: 20px; z-index: 999; background: #166534; color: #bbf7d0; padding: 12px 20px; border-radius: 10px; font-size: 13px; font-weight: 600; box-shadow: 0 8px 30px rgba(0,0,0,0.4); transform: translateX(120%); transition: transform 0.3s ease; }
+    .toast.show { transform: translateX(0); }
+
+    /* Filters */
+    select { padding: 8px 12px; border-radius: 8px; border: 1px solid #1e293b; background: #0f172a; color: #e2e8f0; font-size: 12px; font-weight: 500; cursor: pointer; font-family: inherit; }
+    select:focus { outline: none; border-color: #2dd4bf; }
+
+    /* Empty state */
+    .empty { padding: 40px; text-align: center; color: #475569; }
+
+    /* Loading */
+    .loading { text-align: center; padding: 40px; color: #64748b; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .stats { flex-direction: column; }
+      .workflow { flex-direction: column; }
+      .workflow-arrow { width: 2px; height: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-icon">M</div>
+      <div class="logo-text">
+        <h1>Mattress Overstock</h1>
+        <span>DELIVERY NOTIFICATION HUB</span>
+      </div>
+    </div>
+    <div class="connections">
+      <div class="conn-badge">
+        <div id="spoke-dot" class="conn-dot live"></div>
+        <span class="conn-label">Spoke Dispatch</span>
+        <span id="spoke-status" class="conn-status live">Live</span>
+      </div>
+      <div class="conn-badge">
+        <div id="quo-dot" class="conn-dot live"></div>
+        <span class="conn-label">Quo</span>
+        <span id="quo-status" class="conn-status live">Live</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Nav -->
+  <nav>
+    <button class="active" data-tab="overview">Overview</button>
+    <button data-tab="notifications">Notifications</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <!-- Main Content -->
+  <main>
+    <!-- Overview Tab -->
+    <div id="tab-overview">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px">Today's Delivery Notifications</h2>
+          <p style="color:#64748b;font-size:13px;margin-top:4px" id="overview-subtitle">Loading...</p>
+        </div>
+        <button class="btn btn-primary" id="send-all-btn" style="display:none" onclick="sendAllPending()">
+          Send All Pending (<span id="pending-badge">0</span>)
+        </button>
+      </div>
+
+      <div class="stats" id="stats-container">
+        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub">SMS delivered via Quo</div></div>
+        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub">Awaiting send</div></div>
+        <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="stat-failed" style="color:#ef4444">—</div><div class="stat-sub">Needs attention</div></div>
+        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-delivered" style="color:#818cf8">—</div><div class="stat-sub">Delivery complete</div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>Recent Activity</h3>
+          <div id="activity-log">
+            <div class="loading">Loading activity...</div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Automation Workflow</h3>
+          <div class="workflow">
+            <div class="workflow-step"><div class="icon">📦</div><div class="label">Delivery Scheduled</div><div class="sub">Spoke Dispatch</div></div>
+            <div class="workflow-arrow"></div>
+            <div class="workflow-step"><div class="icon">🔗</div><div class="label">Webhook Fires</div><div class="sub">POST /api/spoke/webhook</div></div>
+            <div class="workflow-arrow"></div>
+            <div class="workflow-step"><div class="icon">⚙️</div><div class="label">Process & Format</div><div class="sub">Railway Server</div></div>
+            <div class="workflow-arrow"></div>
+            <div class="workflow-step"><div class="icon">💬</div><div class="label">Send SMS</div><div class="sub">Quo API</div></div>
+            <div class="workflow-arrow"></div>
+            <div class="workflow-step"><div class="icon">✅</div><div class="label">Customer Notified</div><div class="sub">Confirmation Sent</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notifications Tab -->
+    <div id="tab-notifications" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <h2 style="font-size:20px;font-weight:700">All Notifications</h2>
+        <div style="display:flex;gap:10px">
+          <select id="filter-store" onchange="loadNotifications()">
+            <option value="">All Stores</option>
+            <option value="richmond">Richmond</option>
+            <option value="somerset">Somerset</option>
+            <option value="laurel">Laurel County</option>
+            <option value="london">London</option>
+            <option value="winchester">Winchester</option>
+          </select>
+          <select id="filter-status" onchange="loadNotifications()">
+            <option value="">All Status</option>
+            <option value="sent">Sent</option>
+            <option value="pending">Pending</option>
+            <option value="failed">Failed</option>
+            <option value="delivered">Delivered</option>
+          </select>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Store</th>
+                <th>Delivery Date</th>
+                <th>Time Window</th>
+                <th>Product</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="notifications-table">
+              <tr><td colspan="7" class="loading">Loading notifications...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div id="tab-settings" style="display:none">
+      <h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Configuration</h2>
+
+      <div class="panel">
+        <h3>API Connections</h3>
+        <div class="grid-2">
+          <div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <strong style="font-size:14px">Spoke Dispatch</strong>
+              <span id="spoke-config-status" style="font-size:11px;font-weight:600">Checking...</span>
+            </div>
+            <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">Webhook URL</div>
+            <input readonly id="webhook-url" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace" value="Loading...">
+            <div style="font-size:11px;color:#475569;margin-top:8px">Copy this URL into Spoke Dispatch → Settings → Integrations → Webhooks</div>
+          </div>
+          <div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <strong style="font-size:14px">Quo (SMS)</strong>
+              <span id="quo-config-status" style="font-size:11px;font-weight:600">Checking...</span>
+            </div>
+            <div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">API Endpoint</div>
+            <input readonly value="https://api.quo.com/v1/messages" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace">
+            <div style="font-size:11px;color:#475569;margin-top:8px">Set QUO_API_KEY and QUO_PHONE_NUMBER_ID in Railway environment variables</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <h3 style="margin-bottom:0">SMS Template</h3>
+          <button class="btn btn-outline" onclick="toggleTemplateEdit()">Edit Template</button>
+        </div>
+        <div id="template-display" style="padding:16px;background:#1e293b44;border-radius:8px;border:1px solid #1e293b;font-size:13px;color:#94a3b8;line-height:1.7">Loading...</div>
+        <div id="template-editor" style="display:none;margin-top:12px">
+          <textarea id="template-input" rows="4" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:'DM Sans',system-ui;resize:vertical;line-height:1.7"></textarea>
+          <div style="font-size:11px;color:#475569;line-height:1.6;margin-top:6px">
+            <strong style="color:#64748b">Variables:</strong> {{customer_first}}, {{customer_last}}, {{date}}, {{time_window}}, {{driver}}, {{store}}, {{product}}, {{address}}, {{business_name}}
+          </div>
+          <button class="btn btn-primary" style="margin-top:12px" onclick="saveTemplate()">Save Template</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const API = '';  // Same origin
+
+    // ─── Tab Navigation ────────────────────────
+    document.querySelectorAll('nav button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none');
+        document.getElementById('tab-' + btn.dataset.tab).style.display = '';
+        if (btn.dataset.tab === 'notifications') loadNotifications();
+        if (btn.dataset.tab === 'settings') loadSettings();
+      });
+    });
+
+    // ─── Toast ─────────────────────────────────
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = '✓ ' + msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+    // ─── Store colors ──────────────────────────
+    const storeColors = { richmond: '#2dd4bf', somerset: '#818cf8', laurel: '#fb923c', london: '#f472b6', winchester: '#a3e635' };
+    const storeNames = { richmond: 'Richmond', somerset: 'Somerset', laurel: 'Laurel County', london: 'London', winchester: 'Winchester' };
+
+    function storeDot(store) {
+      const c = storeColors[store] || '#64748b';
+      const n = storeNames[store] || store || '—';
+      return `<span class="store-dot"><span style="background:${c}"></span>${n}</span>`;
+    }
+
+    function badge(status) {
+      return `<span class="badge badge-${status}">${status}</span>`;
+    }
+
+    // ─── Load Stats ────────────────────────────
+    async function loadStats() {
+      try {
+        const res = await fetch(API + '/api/stats');
+        const data = await res.json();
+        document.getElementById('stat-sent').textContent = data.sent || 0;
+        document.getElementById('stat-pending').textContent = data.pending || 0;
+        document.getElementById('stat-failed').textContent = data.failed || 0;
+        document.getElementById('stat-delivered').textContent = data.delivered || 0;
+
+        if (data.pending > 0) {
+          document.getElementById('send-all-btn').style.display = '';
+          document.getElementById('pending-badge').textContent = data.pending;
+        }
+
+        const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        document.getElementById('overview-subtitle').textContent = `${today} — Automated via Spoke Dispatch → Quo SMS`;
+      } catch (e) {
+        console.error('Failed to load stats:', e);
+      }
+    }
+
+    // ─── Load Activity Log ─────────────────────
+    async function loadActivity() {
+      try {
+        const res = await fetch(API + '/api/activity?limit=10');
+        const logs = await res.json();
+        const container = document.getElementById('activity-log');
+
+        if (logs.length === 0) {
+          container.innerHTML = '<div class="empty">No activity yet — waiting for Spoke Dispatch webhooks</div>';
+          return;
+        }
+
+        container.innerHTML = logs.map(log => {
+          const dotColor = log.type.includes('sent') ? '#2dd4bf' : log.type.includes('fail') ? '#ef4444' : log.type.includes('webhook') || log.type.includes('import') ? '#818cf8' : '#475569';
+          const time = new Date(log.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          return `<div class="log-entry">
+            <div class="log-dot" style="background:${dotColor}"></div>
+            <div style="flex:1">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span class="log-event">${log.type.replace(/_/g, ' ')}</span>
+                <span class="log-time">${time}</span>
+              </div>
+              <div class="log-detail">${log.detail}</div>
+            </div>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        console.error('Failed to load activity:', e);
+      }
+    }
+
+    // ─── Load Notifications ────────────────────
+    async function loadNotifications() {
+      const store = document.getElementById('filter-store').value;
+      const status = document.getElementById('filter-status').value;
+      let url = API + '/api/notifications?limit=50';
+      if (store) url += '&store=' + store;
+      if (status) url += '&status=' + status;
+
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        const tbody = document.getElementById('notifications-table');
+
+        if (data.notifications.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="empty">No notifications match your filters</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = data.notifications.map(n => `<tr>
+          <td>
+            <div style="font-weight:600">${n.customer_name}</div>
+            <div class="mono" style="font-size:11px;color:#64748b">${n.phone}</div>
+          </td>
+          <td>${storeDot(n.store)}</td>
+          <td style="color:#94a3b8">${n.scheduled_date || '—'}</td>
+          <td style="color:#94a3b8">${n.time_window || '—'}</td>
+          <td style="color:#94a3b8;font-size:12px">${n.product || '—'}</td>
+          <td>${badge(n.status)}</td>
+          <td>
+            ${n.status === 'failed' ? `<button class="btn btn-danger" onclick="retrySend(${n.id})">Retry</button>` : ''}
+            ${n.status === 'pending' ? `<button class="btn btn-outline" onclick="sendOne(${n.id})">Send</button>` : ''}
+          </td>
+        </tr>`).join('');
+      } catch (e) {
+        console.error('Failed to load notifications:', e);
+      }
+    }
+
+    // ─── Send Actions ──────────────────────────
+    async function sendOne(id) {
+      try {
+        await fetch(API + '/api/notifications/' + id + '/send', { method: 'POST' });
+        showToast('SMS sent successfully');
+        loadNotifications();
+        loadStats();
+        loadActivity();
+      } catch (e) { showToast('Failed to send'); }
+    }
+
+    async function retrySend(id) { await sendOne(id); }
+
+    async function sendAllPending() {
+      try {
+        const res = await fetch(API + '/api/notifications/actions/send-all-pending', { method: 'POST' });
+        const data = await res.json();
+        showToast(`Sent: ${data.sent}, Failed: ${data.failed}`);
+        loadStats();
+        loadActivity();
+      } catch (e) { showToast('Failed to send all'); }
+    }
+
+    // ─── Settings ──────────────────────────────
+    async function loadSettings() {
+      try {
+        const [connRes, tmplRes] = await Promise.all([
+          fetch(API + '/api/connections'),
+          fetch(API + '/api/template'),
+        ]);
+        const conn = await connRes.json();
+        const tmpl = await tmplRes.json();
+
+        document.getElementById('webhook-url').value = conn.spoke.webhookUrl || '—';
+        document.getElementById('spoke-config-status').textContent = conn.spoke.configured ? '✓ Configured' : '✗ Missing API Key';
+        document.getElementById('spoke-config-status').style.color = conn.spoke.configured ? '#2dd4bf' : '#ef4444';
+        document.getElementById('quo-config-status').textContent = conn.quo.configured ? (conn.quo.live ? '✓ Live' : '⚠ Configured (unreachable)') : '✗ Missing API Key';
+        document.getElementById('quo-config-status').style.color = conn.quo.configured ? (conn.quo.live ? '#2dd4bf' : '#fbbf24') : '#ef4444';
+
+        document.getElementById('template-display').textContent = tmpl.body || 'No template set';
+        document.getElementById('template-input').value = tmpl.body || '';
+      } catch (e) {
+        console.error('Failed to load settings:', e);
+      }
+    }
+
+    function toggleTemplateEdit() {
+      const editor = document.getElementById('template-editor');
+      editor.style.display = editor.style.display === 'none' ? '' : 'none';
+    }
+
+    async function saveTemplate() {
+      const body = document.getElementById('template-input').value;
+      try {
+        await fetch(API + '/api/template', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        });
+        document.getElementById('template-display').textContent = body;
+        document.getElementById('template-editor').style.display = 'none';
+        showToast('Template saved');
+      } catch (e) { showToast('Failed to save template'); }
+    }
+
+    // ─── Connection Check ──────────────────────
+    async function checkConnections() {
+      try {
+        const res = await fetch(API + '/api/connections');
+        const conn = await res.json();
+
+        const spokeDot = document.getElementById('spoke-dot');
+        const spokeStatus = document.getElementById('spoke-status');
+        spokeDot.className = 'conn-dot ' + (conn.spoke.configured ? 'live' : 'down');
+        spokeStatus.className = 'conn-status ' + (conn.spoke.configured ? 'live' : 'down');
+        spokeStatus.textContent = conn.spoke.configured ? 'Live' : 'Down';
+
+        const quoDot = document.getElementById('quo-dot');
+        const quoStatus = document.getElementById('quo-status');
+        const quoOk = conn.quo.configured && conn.quo.live;
+        quoDot.className = 'conn-dot ' + (quoOk ? 'live' : 'down');
+        quoStatus.className = 'conn-status ' + (quoOk ? 'live' : 'down');
+        quoStatus.textContent = quoOk ? 'Live' : (conn.quo.configured ? 'Error' : 'Down');
+      } catch (e) {
+        console.error('Connection check failed:', e);
+      }
+    }
+
+    // ─── Init ──────────────────────────────────
+    loadStats();
+    loadActivity();
+    checkConnections();
+
+    // Refresh every 30 seconds
+    setInterval(() => {
+      loadStats();
+      loadActivity();
+      checkConnections();
+    }, 30000);
+  </script>
+</body>
+</html>
