@@ -86,5 +86,18 @@ console.log("[DB] Database initialized at", DB_PATH);
 
 // ─── Migrations (safe to run multiple times) ─────────────
 try { db.exec("ALTER TABLE notifications ADD COLUMN review_sent_at TEXT"); } catch(e) {}
+try { db.exec("ALTER TABLE notifications ADD COLUMN conversation_state TEXT DEFAULT 'none'"); } catch(e) {}
+try { db.exec("ALTER TABLE notifications ADD COLUMN reschedule_count INTEGER DEFAULT 0"); } catch(e) {}
+try { db.exec("ALTER TABLE notifications ADD COLUMN rescheduled_from INTEGER"); } catch(e) {}
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS reschedule_conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    notification_id INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_reschedule_notif ON reschedule_conversations(notification_id)"); } catch(e) {}
 
 module.exports = db;
