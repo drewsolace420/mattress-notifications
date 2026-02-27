@@ -40,18 +40,9 @@ function resolveStore(depotName) {
 
 /**
  * Main webhook handler
- * Spoke sends different event shapes depending on the action.
- * We primarily care about stop-level data for customer notifications.
  */
 async function handleSpokeWebhook(payload, headers) {
-  // Optional: verify webhook signature if Spoke provides one
-  // verifySignature(payload, headers);
-
   const results = { processed: 0, skipped: 0, errors: [] };
-
-  // ─── Handle different payload structures ────────────────
-  // Spoke's API can send stop data in different formats.
-  // Adjust these based on your actual webhook payloads.
 
   // Case 1: Array of stops (batch import / route optimization)
   if (Array.isArray(payload)) {
@@ -60,6 +51,7 @@ async function handleSpokeWebhook(payload, headers) {
         await processStop(stop);
         results.processed++;
       } catch (err) {
+        console.error("[Spoke] Error processing stop:", err.message, err.stack);
         results.errors.push({ stop: stop?.id, error: err.message });
       }
     }
@@ -73,6 +65,7 @@ async function handleSpokeWebhook(payload, headers) {
       await processStop(stop);
       results.processed++;
     } catch (err) {
+      console.error("[Spoke] Error processing stop:", err.message, err.stack);
       results.errors.push({ stop: stop?.id, error: err.message });
     }
     return results;
@@ -87,6 +80,7 @@ async function handleSpokeWebhook(payload, headers) {
         await processStop(stop, route);
         results.processed++;
       } catch (err) {
+        console.error("[Spoke] Error processing stop:", err.message, err.stack);
         results.errors.push({ stop: stop?.id, error: err.message });
       }
     }
@@ -99,13 +93,13 @@ async function handleSpokeWebhook(payload, headers) {
     const eventType = payload.event || payload.type;
     console.log(`[Spoke] Received event type: ${eventType}`);
 
-    // Handle stop-related events
     if (eventType.includes("stop") || eventType.includes("delivery")) {
       const stopData = payload.data || payload;
       try {
         await processStop(stopData);
         results.processed++;
       } catch (err) {
+        console.error("[Spoke] Error processing stop:", err.message, err.stack);
         results.errors.push({ error: err.message });
       }
     }
@@ -120,6 +114,7 @@ async function handleSpokeWebhook(payload, headers) {
       await processStop(payload);
       results.processed++;
     } catch (err) {
+      console.error("[Spoke] Error processing stop:", err.message, err.stack);
       results.errors.push({ error: err.message });
     }
     return results;
@@ -135,7 +130,9 @@ async function handleSpokeWebhook(payload, headers) {
  * Process a single delivery stop into a notification
  */
 async function processStop(stop, route = null) {
-  // Extract customer info — adapt field names to match your actual Spoke data
+  console.log("[Spoke] Processing stop:", JSON.stringify(stop).substring(0, 300));
+
+  // Extract customer info
   const customerName =
     stop.recipient?.name ||
     stop.customer_name ||
@@ -157,12 +154,14 @@ async function processStop(stop, route = null) {
     return;
   }
 
+  console.log(`[Spoke] Customer: ${customerName}, Phone: ${phone}`);
+
   const address =
     stop.address?.formattedAddress ||
     stop.address?.addressLineOne ||
     stop.formattedAddress ||
-    stop.address ||
-    (typeof stop.address === "object"
+    (typeof stop.address === "string" ? stop.address : "") ||
+    (typeof stop.address === "object" && stop.address !== null
       ? `${stop.address.line1 || ""} ${stop.address.city || ""} ${stop.address.state || ""}`.trim()
       : "") ||
     "";
@@ -185,10 +184,10 @@ async function processStop(stop, route = null) {
   let rawTimeStore = rawDeliveryTime;
   if (rawDeliveryTime) {
     const window = computeDeliveryWindow(rawDeliveryTime);
-    timeWindow = window.windowText; // e.g., "between 9:00 and 11:00 AM"
+    timeWindow = window.windowText;
+    console.log(`[Spoke] Raw time: ${rawDeliveryTime} → Window: ${timeWindow}`);
   } else if (stop.timeWindow || stop.deliveryWindow) {
     timeWindow = stop.timeWindow || stop.deliveryWindow;
-    // If it's a range like "9:00 AM - 11:00 AM", extract start for raw storage
     const parts = (stop.timeWindow || stop.deliveryWindow || "").split(/[-–]/);
     if (parts.length >= 1) rawTimeStore = parts[0].trim();
   } else if (stop.startTime && stop.endTime) {
@@ -216,7 +215,7 @@ async function processStop(stop, route = null) {
 
   const driver = route?.driver?.name || stop.driver?.name || stop.driverName || "Your driver";
 
-  const store = resolveStore(route?.depot?.name || stop.depot || stop.store || stop.team);
+  const store = resolveStore(route?.depot?.name || stop.depot?.name || stop.depot || stop.store || stop.team);
 
   const spokeStopId = stop.id || stop.stopId || null;
   const spokeRouteId = route?.id || stop.routeId || null;
@@ -229,6 +228,8 @@ async function processStop(stop, route = null) {
       return;
     }
   }
+
+  console.log(`[Spoke] Inserting notification: ${customerName}, ${store}, ${scheduledDate}, ${timeWindow}`);
 
   // Insert notification — always starts as 'pending'
   // The 6 PM EST scheduler will handle actual sending
@@ -256,7 +257,7 @@ async function processStop(stop, route = null) {
 
   const notificationId = result.lastInsertRowid;
   logActivity("stop_imported", `New delivery: ${customerName} → ${store} (${timeWindow})`, notificationId);
-  console.log(`[Spoke] Stored notification #${notificationId} for ${customerName} — ${scheduledDate} ${timeWindow}`);
+  console.log(`[Spoke] ✓ Stored notification #${notificationId} for ${customerName} — ${scheduledDate} ${timeWindow}`);
 }
 
 /**
@@ -264,9 +265,7 @@ async function processStop(stop, route = null) {
  */
 function cleanPhone(phone) {
   if (!phone) return "";
-  // Strip everything except digits and leading +
   let cleaned = phone.replace(/[^\d+]/g, "");
-  // Ensure US format
   if (cleaned.length === 10) cleaned = "+1" + cleaned;
   if (cleaned.length === 11 && cleaned.startsWith("1")) cleaned = "+" + cleaned;
   return cleaned;
