@@ -377,6 +377,7 @@ async function processSpokeStop(webhookData) {
     );
 
   const notificationId = result.lastInsertRowid;
+  trackPlan(spokeStopId, scheduledDate);
   logActivity("stop_imported", `New delivery: ${customerName} → ${STORE_DISPLAY_NAMES[store] || store} (${timeWindow})`, notificationId);
   console.log("[Spoke] ✓ Stored notification #" + notificationId);
 }
@@ -589,6 +590,7 @@ async function processManualStop(stop) {
     );
 
   const notificationId = result.lastInsertRowid;
+  trackPlan(spokeStopId, scheduledDate);
   logActivity("stop_imported", `New delivery: ${customerName} → ${store} (${timeWindow})`, notificationId);
   console.log("[Spoke] ✓ Stored notification #" + notificationId);
 }
@@ -626,6 +628,26 @@ function logActivity(type, detail, notificationId = null) {
   db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
     type, detail, notificationId, new Date().toISOString()
   );
+}
+
+/**
+ * Track a Spoke plan ID for route sync.
+ * Extracts plan ID from stop ID (e.g., "plans/abc123/stops/xyz" → "plans/abc123")
+ * and stores it in tracked_plans with the delivery date.
+ */
+function trackPlan(spokeStopId, deliveryDate) {
+  if (!spokeStopId) return;
+  const match = spokeStopId.match(/^(plans\/[^/]+)/);
+  if (!match) return;
+  const planId = match[1];
+  try {
+    db.prepare(
+      "INSERT OR IGNORE INTO tracked_plans (plan_id, delivery_date, created_at) VALUES (?, ?, ?)"
+    ).run(planId, deliveryDate, new Date().toISOString());
+    console.log(`[Spoke] Tracked plan: ${planId} for ${deliveryDate}`);
+  } catch (e) {
+    // Already tracked — that's fine
+  }
 }
 
 module.exports = { handleSpokeWebhook };
