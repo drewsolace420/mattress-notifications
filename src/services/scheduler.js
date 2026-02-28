@@ -1,5 +1,5 @@
 /**
- * Daily Scheduler — 6 PM EST Send
+ * Daily Scheduler — 6 PM EST Send + 9 PM AI Staff Summary
  *
  * SCHEDULE:
  *   Monday 6 PM    → sends for Tuesday deliveries
@@ -10,14 +10,19 @@
  *   Saturday       → NO SEND (Sunday = no delivery)
  *   Sunday         → NO SEND (Monday = no delivery)
  *
+ * 9 PM STAFF SUMMARY:
+ *   Uses Claude (Sonnet 4.5) to generate a natural, conversational
+ *   SMS recap of tomorrow's deliveries for the scheduling team.
+ *   Falls back to a simple template if the API call fails.
+ *
  * This uses a simple interval check rather than a cron dependency.
  * Checks every minute if it's time to fire.
  */
 
 const db = require("../database");
+const fetch = require("node-fetch");
 const { sendSms } = require("./quo");
 const { getSmsBody, isSendDay } = require("./templates");
-const fetch = require("node-fetch");
 
 const SEND_HOUR = 18; // 6 PM
 const SEND_MINUTE = 0;
@@ -220,14 +225,76 @@ function shouldSendSummary() {
 }
 
 /**
- * 9 PM Staff Summary
+ * Call Claude API to generate a natural staff summary message.
+ */
+async function generateSummaryWithClaude(data) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.log("[Scheduler] No ANTHROPIC_API_KEY — falling back to template summary");
+    return null;
+  }
+
+  const systemPrompt = `You are a dispatcher assistant for Mattress Overstock, a mattress delivery company in Kentucky. 
+Write a brief SMS summary for the scheduling staff about tomorrow's deliveries.
+
+RULES:
+- Keep it under 300 characters if possible, max 450
+- Be conversational but informative — this is a text to coworkers, not a formal report
+- Lead with the most important info (total deliveries, confirmation status)
+- Call out anything that needs attention: declines, no-replies, active rescheduling, failed sends
+- If everyone confirmed, keep it short and upbeat
+- If no deliveries, keep it very brief
+- No emojis. No hashtags. Use plain text formatting
+- Include the date and day of the week
+- If there are per-store details worth noting, mention them briefly
+- Sign off as "MO Delivery AI 1.0"`;
+
+  const userMessage = `Generate a staff summary SMS for tomorrow's deliveries based on this data:
+
+${JSON.stringify(data, null, 2)}`;
+
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 300,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userMessage }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[Scheduler] Claude API error:", res.status, errText.substring(0, 500));
+      return null;
+    }
+
+    const responseData = await res.json();
+    const text = responseData.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+
+    console.log("[Scheduler] Claude summary:", text);
+    return text.trim();
+  } catch (e) {
+    console.error("[Scheduler] Claude API fetch error:", e.message);
+    return null;
+  }
+}
+
+/**
+ * 9 PM Staff Summary (AI-Generated)
  *
- * Sends a text to scheduling staff with a recap of tomorrow's deliveries:
- *   - Total notifications sent
- *   - Confirmed (YES) count
- *   - Declined (NO) count
- *   - No reply count
- *   - Any rescheduling in progress
+ * Gathers delivery stats and per-store breakdowns, then uses Claude
+ * to write a natural, conversational SMS summary for scheduling staff.
+ * Falls back to a simple template if the API call fails.
  */
 async function executeStaffSummary() {
   const now = getESTNow();
@@ -247,43 +314,81 @@ async function executeStaffSummary() {
   console.log(`[Scheduler] 9 PM Staff Summary triggered`);
   console.log(`[Scheduler] Summary for deliveries on: ${tomorrowStr}`);
 
-  // Get counts for tomorrow
-  const total = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ?").get(tomorrowStr).count;
+  // ─── Gather overall stats ───
+  const total = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status != 'cancelled'").get(tomorrowStr).count;
   const sent = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status IN ('sent','delivered')").get(tomorrowStr).count;
   const confirmed = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'yes'").get(tomorrowStr).count;
   const declined = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND customer_response = 'no'").get(tomorrowStr).count;
   const noReply = sent - confirmed - declined;
   const pending = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'pending'").get(tomorrowStr).count;
+  const failed = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND status = 'failed'").get(tomorrowStr).count;
   const rescheduling = db.prepare("SELECT COUNT(*) as count FROM notifications WHERE scheduled_date = ? AND conversation_state = 'rescheduling'").get(tomorrowStr).count;
 
-  // Build summary message
-  let message = `MATTRESS OVERSTOCK\n`;
-  message += `${tomorrowDisplay}\n`;
-  message += `━━━━━━━━━━━━━━━━━━\n`;
-  message += `${total} Deliveries on deck\n\n`;
-  message += `${confirmed} Confirmed\n`;
-  message += `${declined} Declined\n`;
-  message += `${noReply} Awaiting reply\n`;
+  // ─── Per-store breakdown ───
+  const storeBreakdown = db.prepare(`
+    SELECT store,
+      COUNT(*) as total,
+      SUM(CASE WHEN customer_response = 'yes' THEN 1 ELSE 0 END) as confirmed,
+      SUM(CASE WHEN customer_response = 'no' THEN 1 ELSE 0 END) as declined,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+    FROM notifications
+    WHERE scheduled_date = ? AND status != 'cancelled'
+    GROUP BY store
+  `).all(tomorrowStr);
 
-  if (pending > 0) {
-    message += `${pending} Not yet sent\n`;
+  // ─── Notable details (who declined, who's rescheduling, who hasn't replied) ───
+  const declinedCustomers = db.prepare(
+    "SELECT customer_name, store FROM notifications WHERE scheduled_date = ? AND customer_response = 'no'"
+  ).all(tomorrowStr);
+
+  const reschedulingCustomers = db.prepare(
+    "SELECT customer_name, store FROM notifications WHERE scheduled_date = ? AND conversation_state = 'rescheduling'"
+  ).all(tomorrowStr);
+
+  const noReplyCustomers = db.prepare(
+    "SELECT customer_name, store FROM notifications WHERE scheduled_date = ? AND status IN ('sent','delivered') AND customer_response IS NULL"
+  ).all(tomorrowStr);
+
+  // ─── Build data payload for Claude ───
+  const summaryData = {
+    date: tomorrowDisplay,
+    dateStr: tomorrowStr,
+    overall: { total, sent, confirmed, declined, noReply, pending, failed, rescheduling },
+    byStore: storeBreakdown,
+    declinedCustomers: declinedCustomers.map(c => `${c.customer_name} (${c.store})`),
+    reschedulingCustomers: reschedulingCustomers.map(c => `${c.customer_name} (${c.store})`),
+    noReplyCustomers: noReplyCustomers.map(c => `${c.customer_name} (${c.store})`),
+  };
+
+  // ─── Generate summary with Claude ───
+  let message = await generateSummaryWithClaude(summaryData);
+
+  // ─── Fallback if Claude fails ───
+  if (!message) {
+    console.log("[Scheduler] Using fallback template for staff summary");
+    message = `MATTRESS OVERSTOCK\n`;
+    message += `${tomorrowDisplay}\n`;
+    message += `━━━━━━━━━━━━━━━━━━\n`;
+    message += `${total} Deliveries on deck\n\n`;
+    message += `${confirmed} Confirmed\n`;
+    message += `${declined} Declined\n`;
+    message += `${noReply} Awaiting reply\n`;
+
+    if (pending > 0) message += `${pending} Not yet sent\n`;
+    if (rescheduling > 0) message += `${rescheduling} Rescheduling\n`;
+
+    if (confirmed === total && total > 0) {
+      message += `\nAll confirmed. Let's roll.`;
+    } else if (noReply > 0) {
+      message += `\n${noReply} still haven't replied.`;
+    }
+
+    if (total === 0) {
+      message = `MATTRESS OVERSTOCK\n${tomorrowDisplay}\n━━━━━━━━━━━━━━━━━━\nNo deliveries tomorrow. Enjoy the break.`;
+    }
   }
 
-  if (rescheduling > 0) {
-    message += `${rescheduling} Rescheduling\n`;
-  }
-
-  if (confirmed === total && total > 0) {
-    message += `\nAll confirmed. Let's roll.`;
-  } else if (noReply > 0) {
-    message += `\n${noReply} still haven't replied.`;
-  }
-
-  if (total === 0) {
-    message = `MATTRESS OVERSTOCK\n${tomorrowDisplay}\n━━━━━━━━━━━━━━━━━━\nNo deliveries tomorrow. Enjoy the break.`;
-  }
-
-  // Send to each staff member
+  // ─── Send to each staff member ───
   let sentCount = 0;
   for (const phone of STAFF_PHONES) {
     try {
