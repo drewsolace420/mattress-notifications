@@ -86,6 +86,12 @@ async function handleRescheduleMessage(notification, customerMessage) {
 
   if (!rules) {
     console.log("[Reschedule] No delivery rules for store:", store);
+    // Alert Drew that a human is needed
+    try {
+      await sendSms("+19316500631", `HUMAN NEEDED — ${notification.customer_name} (${notification.phone}) needs help rescheduling. No delivery rules for store: ${store || "unknown"}.`);
+    } catch (e) {
+      console.error("[Reschedule] Failed to alert Drew:", e.message);
+    }
     return {
       reply: "We're having trouble looking up your delivery area. A team member will reach out to help reschedule. Thank you!",
       rescheduled: false,
@@ -118,6 +124,12 @@ async function handleRescheduleMessage(notification, customerMessage) {
   const claudeResponse = await callClaude(systemPrompt, messages);
 
   if (!claudeResponse) {
+    // Alert Drew that a human is needed (Claude API failed)
+    try {
+      await sendSms("+19316500631", `HUMAN NEEDED — ${notification.customer_name} (${notification.phone}) needs help rescheduling. Emma had a technical issue and couldn't respond.`);
+    } catch (e) {
+      console.error("[Reschedule] Failed to alert Drew:", e.message);
+    }
     return {
       reply: "We're having a little trouble right now. A team member will reach out to help reschedule. Thank you!",
       rescheduled: false,
@@ -138,6 +150,12 @@ async function handleRescheduleMessage(notification, customerMessage) {
   } catch (e) {
     console.error("[Reschedule] Failed to parse Claude response:", e.message);
     console.log("[Reschedule] Raw response:", claudeResponse);
+    // Alert Drew that a human is needed (Claude response unparseable)
+    try {
+      await sendSms("+19316500631", `HUMAN NEEDED — ${notification.customer_name} (${notification.phone}) needs help rescheduling. Emma had a technical issue and couldn't respond.`);
+    } catch (alertErr) {
+      console.error("[Reschedule] Failed to alert Drew:", alertErr.message);
+    }
     return {
       reply: "We're having a little trouble right now. A team member will reach out to help reschedule. Thank you!",
       rescheduled: false,
@@ -199,6 +217,14 @@ async function handleRescheduleMessage(notification, customerMessage) {
 
     logActivity("reschedule_handoff", `${notification.customer_name} needs human assistance for rescheduling`, notification.id);
 
+    // Alert Drew that a human is needed
+    try {
+      await sendSms("+19316500631", `HUMAN NEEDED — ${notification.customer_name} (${notification.phone}) needs help rescheduling their ${notification.store || ""} delivery originally scheduled for ${notification.scheduled_date}. Emma couldn't handle the request.`);
+      logActivity("handoff_alert_sent", `Handoff alert sent to Drew for ${notification.customer_name}`, notification.id);
+    } catch (e) {
+      console.error("[Reschedule] Failed to alert Drew:", e.message);
+    }
+
     return { reply: parsed.reply, rescheduled: false, handoff: true };
   }
 
@@ -228,7 +254,9 @@ function buildSystemPrompt(store, rules, notification) {
 
   const flexNote = rules.flexibleNote ? `\n- ${rules.flexibleNote}` : "";
 
-  return `You are a friendly text message assistant for Mattress Overstock helping a customer reschedule their mattress delivery. Keep your messages short and conversational — this is SMS, not email.
+  return `You are Emma, a friendly AI text message assistant for Mattress Overstock helping a customer reschedule their mattress delivery. Keep your messages short and conversational — this is SMS, not email.
+
+You have already introduced yourself as "Emma, an AI assistant" in your first message to this customer. Do NOT re-introduce yourself or mention being AI again — just continue the conversation naturally as Emma.
 
 CUSTOMER INFO:
 - Name: ${notification.customer_name}
@@ -249,7 +277,6 @@ IMPORTANT RULES:
 - If the customer asks for a day that doesn't match the store's delivery days, tell them which days are available.
 - If the customer seems frustrated or has a complex request you can't handle, hand off to a human.
 - Be warm and brief. Use first names. No emojis.
-- Do NOT mention that you are an AI or automated system.
 - The reschedule date must be at least 2 days from today to allow route planning.
 
 You MUST respond with ONLY a JSON object (no other text) in this exact format:
@@ -448,12 +475,12 @@ async function startRescheduleConversation(notification) {
   db.prepare("UPDATE notifications SET conversation_state = 'rescheduling', updated_at = ? WHERE id = ?")
     .run(new Date().toISOString(), notification.id);
 
-  // Send initial reschedule message with available days
+  // Send initial reschedule message — introduce Emma (AI assistant)
   const firstName = notification.customer_name.split(" ")[0];
-  let message = `No problem, ${firstName}! We can reschedule your delivery. We deliver to your area on ${rules.dayNames}. What day works best for you?`;
+  let message = `No problem, ${firstName}! This is Emma, an AI assistant for Mattress Overstock. I can help reschedule your delivery. We deliver to your area on ${rules.dayNames}. What day works best for you?`;
 
   if (rules.flexibleNote) {
-    message = `No problem, ${firstName}! We can reschedule your delivery. We typically deliver to your area on ${rules.dayNames}. ${rules.flexibleNote} What day works best for you?`;
+    message = `No problem, ${firstName}! This is Emma, an AI assistant for Mattress Overstock. I can help reschedule your delivery. We typically deliver to your area on ${rules.dayNames}. ${rules.flexibleNote} What day works best for you?`;
   }
 
   await sendSms(notification.phone, message);
