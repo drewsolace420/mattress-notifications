@@ -1,17 +1,13 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 
-// Use /tmp on Railway for writable storage, or local data dir
 const DB_PATH = process.env.DATABASE_URL || path.join(__dirname, "../data/notifications.db");
 
-// Ensure data directory exists
 const fs = require("fs");
 const dir = path.dirname(DB_PATH);
 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
 const db = new Database(DB_PATH);
-
-// Enable WAL mode for better concurrent performance
 db.pragma("journal_mode = WAL");
 
 // ─── Schema ──────────────────────────────────────────────
@@ -26,13 +22,13 @@ db.exec(`
     time_window TEXT,
     product TEXT,
     driver TEXT,
-    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'sent', 'failed', 'delivered')),
+    status TEXT DEFAULT 'pending',
     sent_at TEXT,
     quo_message_id TEXT,
     spoke_stop_id TEXT,
     spoke_route_id TEXT,
     raw_delivery_time TEXT,
-    customer_response TEXT CHECK(customer_response IN ('yes', 'no', 'stop', NULL)),
+    customer_response TEXT,
     response_at TEXT,
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,
@@ -67,14 +63,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
 `);
 
-// ─── Seed default settings ──────────────────────────────
+// ─── Seed defaults ───────────────────────────────────────
 const upsert = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
 upsert.run("auto_send_enabled", process.env.AUTO_SEND_ENABLED || "true");
 upsert.run("business_name", process.env.BUSINESS_NAME || "Mattress Overstock");
 upsert.run("retry_max", "3");
 upsert.run("retry_interval_minutes", "5");
 
-// Seed default SMS template if none exists
 const templateCount = db.prepare("SELECT COUNT(*) as count FROM sms_templates").get().count;
 if (templateCount === 0) {
   db.prepare("INSERT INTO sms_templates (body, is_active) VALUES (?, 1)").run(
@@ -99,5 +94,55 @@ try { db.exec(`
   )
 `); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_reschedule_notif ON reschedule_conversations(notification_id)"); } catch(e) {}
+
+// tracked_plans — Spoke plan IDs discovered from webhooks or manual entry
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS tracked_plans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id TEXT NOT NULL UNIQUE,
+    delivery_date TEXT,
+    label TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_tracked_plans_date ON tracked_plans(delivery_date)"); } catch(e) {}
+
+// Migration: remove CHECK constraint on status column if present
+// Old schema had CHECK(status IN ('pending','sent','failed','delivered')) which blocks 'cancelled'
+try {
+  const testStmt = db.prepare("INSERT INTO notifications (customer_name, phone, status) VALUES ('__test__', '__test__', 'cancelled')");
+  try {
+    testStmt.run();
+    db.prepare("DELETE FROM notifications WHERE customer_name = '__test__'").run();
+  } catch (checkErr) {
+    console.log("[DB] Rebuilding table to remove status CHECK constraint...");
+    db.exec(`
+      CREATE TABLE notifications_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        customer_name TEXT NOT NULL, phone TEXT NOT NULL, store TEXT, address TEXT,
+        scheduled_date TEXT, time_window TEXT, product TEXT, driver TEXT,
+        status TEXT DEFAULT 'pending', sent_at TEXT, quo_message_id TEXT,
+        spoke_stop_id TEXT, spoke_route_id TEXT, raw_delivery_time TEXT,
+        customer_response TEXT, response_at TEXT, error_message TEXT,
+        retry_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')),
+        review_sent_at TEXT, conversation_state TEXT DEFAULT 'none',
+        reschedule_count INTEGER DEFAULT 0, rescheduled_from INTEGER
+      );
+      INSERT INTO notifications_new SELECT
+        id, customer_name, phone, store, address, scheduled_date, time_window,
+        product, driver, status, sent_at, quo_message_id, spoke_stop_id, spoke_route_id,
+        raw_delivery_time, customer_response, response_at, error_message, retry_count,
+        created_at, updated_at, review_sent_at, conversation_state, reschedule_count, rescheduled_from
+      FROM notifications;
+      DROP TABLE notifications;
+      ALTER TABLE notifications_new RENAME TO notifications;
+      CREATE INDEX idx_notifications_status ON notifications(status);
+      CREATE INDEX idx_notifications_date ON notifications(scheduled_date);
+      CREATE INDEX idx_notifications_store ON notifications(store);
+    `);
+    console.log("[DB] ✓ Table rebuilt — 'cancelled' status now allowed");
+  }
+} catch(e) {}
 
 module.exports = db;
