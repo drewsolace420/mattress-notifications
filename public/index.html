@@ -428,21 +428,6 @@
           <div style="color:#475569;font-size:12px">Loading...</div>
         </div>
       </div>
-
-      <div class="panel">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <h3 style="margin-bottom:0">SMS Template</h3>
-          <button class="btn btn-outline" onclick="toggleTemplateEdit()">Edit Template</button>
-        </div>
-        <div id="template-display" style="padding:16px;background:#1e293b44;border-radius:8px;border:1px solid #1e293b;font-size:13px;color:#94a3b8;line-height:1.7">Loading...</div>
-        <div id="template-editor" style="display:none;margin-top:12px">
-          <textarea id="template-input" rows="4" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:'DM Sans',system-ui;resize:vertical;line-height:1.7"></textarea>
-          <div style="font-size:11px;color:#475569;line-height:1.6;margin-top:6px">
-            <strong style="color:#64748b">Variables:</strong> {{customer_first}}, {{customer_last}}, {{date}}, {{time_window}}, {{driver}}, {{store}}, {{product}}, {{address}}, {{business_name}}
-          </div>
-          <button class="btn btn-primary" style="margin-top:12px" onclick="saveTemplate()">Save Template</button>
-        </div>
-      </div>
     </div>
   </main>
 
@@ -796,12 +781,8 @@
     // ─── Settings ──────────────────────────────
     async function loadSettings() {
       try {
-        const [connRes, tmplRes] = await Promise.all([
-          fetch(API + '/api/connections'),
-          fetch(API + '/api/template'),
-        ]);
-        const conn = await connRes.json();
-        const tmpl = await tmplRes.json();
+        const res = await fetch(API + '/api/connections');
+        const conn = await res.json();
 
         document.getElementById('webhook-url').value = conn.spoke.webhookUrl || '—';
         document.getElementById('spoke-config-status').textContent = conn.spoke.configured ? '✓ Configured' : '✗ Missing API Key';
@@ -809,32 +790,10 @@
         document.getElementById('quo-config-status').textContent = conn.quo.configured ? (conn.quo.live ? '✓ Live' : '⚠ Configured (unreachable)') : '✗ Missing API Key';
         document.getElementById('quo-config-status').style.color = conn.quo.configured ? (conn.quo.live ? '#2dd4bf' : '#fbbf24') : '#ef4444';
 
-        document.getElementById('template-display').textContent = tmpl.body || 'No template set';
-        document.getElementById('template-input').value = tmpl.body || '';
-
         loadTrackedPlans();
       } catch (e) {
         console.error('Failed to load settings:', e);
       }
-    }
-
-    function toggleTemplateEdit() {
-      const editor = document.getElementById('template-editor');
-      editor.style.display = editor.style.display === 'none' ? '' : 'none';
-    }
-
-    async function saveTemplate() {
-      const body = document.getElementById('template-input').value;
-      try {
-        await fetch(API + '/api/template', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ body }),
-        });
-        document.getElementById('template-display').textContent = body;
-        document.getElementById('template-editor').style.display = 'none';
-        showToast('Template saved');
-      } catch (e) { showToast('Failed to save template'); }
     }
 
     // ─── Connection Check ──────────────────────
