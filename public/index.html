@@ -63,6 +63,7 @@
     .badge-failed { color: #ef4444; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.13); }
     .badge-delivered { color: #818cf8; background: rgba(129,140,248,0.12); border: 1px solid rgba(129,140,248,0.13); }
     .badge-cancelled { color: #64748b; background: rgba(100,116,139,0.12); border: 1px solid rgba(100,116,139,0.13); text-decoration: line-through; }
+    .badge-rescheduling { color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.13); }
 
     /* Store dot */
     .store-dot { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #94a3b8; }
@@ -131,14 +132,14 @@
     </div>
     <div class="connections">
       <div class="conn-badge">
-        <div id="spoke-dot" class="conn-dot live"></div>
+        <div id="spoke-dot" class="conn-dot down"></div>
         <span class="conn-label">Spoke Dispatch</span>
-        <span id="spoke-status" class="conn-status live">Live</span>
+        <span id="spoke-status" class="conn-status down">Checking</span>
       </div>
       <div class="conn-badge">
-        <div id="quo-dot" class="conn-dot live"></div>
+        <div id="quo-dot" class="conn-dot down"></div>
         <span class="conn-label">Quo</span>
-        <span id="quo-status" class="conn-status live">Live</span>
+        <span id="quo-status" class="conn-status down">Checking</span>
       </div>
     </div>
   </header>
@@ -157,7 +158,7 @@
     <div id="tab-overview">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
         <div>
-          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px" id="overview-title">Today's Deliveries</h2>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px" id="overview-title">Next Delivery Day</h2>
           <p style="color:#64748b;font-size:13px;margin-top:4px" id="overview-subtitle">Loading...</p>
         </div>
         <div style="display:flex;gap:10px;align-items:center">
@@ -169,10 +170,10 @@
       </div>
 
       <div class="stats" id="stats-container">
-        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub" id="sub-sent">SMS delivered today</div></div>
-        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub" id="sub-pending">Awaiting 6 PM send</div></div>
-        <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="stat-failed" style="color:#ef4444">—</div><div class="stat-sub" id="sub-failed">Needs attention</div></div>
-        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-delivered" style="color:#818cf8">—</div><div class="stat-sub" id="sub-delivered">Replied YES</div></div>
+        <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="stat-sent" style="color:#2dd4bf">—</div><div class="stat-sub" id="sub-sent">SMS delivered</div></div>
+        <div class="stat-card"><div class="stat-label">Pending</div><div class="stat-value" id="stat-pending" style="color:#fbbf24">—</div><div class="stat-sub" id="sub-pending">Awaiting send</div></div>
+        <div class="stat-card"><div class="stat-label">Confirmed</div><div class="stat-value" id="stat-confirmed" style="color:#818cf8">—</div><div class="stat-sub" id="sub-confirmed">Replied YES</div></div>
+        <div class="stat-card"><div class="stat-label">Declined</div><div class="stat-value" id="stat-declined" style="color:#ef4444">—</div><div class="stat-sub" id="sub-declined">Replied NO</div></div>
       </div>
 
       <!-- Tomorrow's Queue + Scheduler -->
@@ -238,19 +239,20 @@
         <div class="panel">
           <h3>Automation Workflow</h3>
           <div class="workflow">
-            <div class="workflow-step"><div class="icon">📦</div><div class="label">Spoke Dispatch</div><div class="sub">Route sent to driver</div></div>
+            <div class="workflow-step"><div class="icon">📦</div><div class="label">Spoke Dispatch</div><div class="sub">Route → webhook</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">⚙️</div><div class="label">Process Stop</div><div class="sub">Fetch recipient + ETA</div></div>
+            <div class="workflow-step"><div class="icon">🔄</div><div class="label">Sync & Import</div><div class="sub">Auto every 15 min</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">⏰</div><div class="label">6 PM EST</div><div class="sub">Daily batch send</div></div>
+            <div class="workflow-step"><div class="icon">⏰</div><div class="label">6 PM Send</div><div class="sub">Daily batch SMS</div></div>
             <div class="workflow-arrow"></div>
-            <div class="workflow-step"><div class="icon">💬</div><div class="label">SMS via Quo</div><div class="sub">YES / NO reply</div></div>
+            <div class="workflow-step"><div class="icon">💬</div><div class="label">Customer Reply</div><div class="sub">YES / NO / STOP</div></div>
           </div>
           <div style="margin-top:14px;padding:12px;background:#1e293b44;border-radius:8px;font-size:11px;color:#64748b;line-height:1.8">
             <strong style="color:#94a3b8">6 PM:</strong> Customer texts sent Mon–Fri for next-day deliveries<br>
             <strong style="color:#94a3b8">9 PM:</strong> Staff summary sent to scheduling team<br>
-            <strong style="color:#94a3b8">Windows:</strong> 2-hour blocks, rounded up to nearest :30<br>
-            <strong style="color:#94a3b8">Replies:</strong> YES = confirmed, NO = needs rescheduling
+            <strong style="color:#94a3b8">YES:</strong> Confirmed → Google review sent after delivery<br>
+            <strong style="color:#94a3b8">NO:</strong> AI reschedule conversation starts<br>
+            <strong style="color:#94a3b8">Sync:</strong> Every 15 min (8–4), every 5 min (4–6)
           </div>
         </div>
       </div>
@@ -263,13 +265,10 @@
         <div style="display:flex;gap:10px">
           <select id="filter-store" onchange="loadNotifications()">
             <option value="">All Stores</option>
-            <option value="somerset">Somerset</option>
             <option value="lexington">Nicholasville Rd</option>
-            <option value="london">London</option>
             <option value="georgetown">Georgetown</option>
-            <option value="richmond">Richmond</option>
-            <option value="winchester">Winchester</option>
-            <option value="laurel">Laurel County</option>
+            <option value="somerset">Somerset</option>
+            <option value="london">London</option>
           </select>
           <select id="filter-status" onchange="loadNotifications()">
             <option value="">All Status</option>
@@ -278,6 +277,7 @@
             <option value="failed">Failed</option>
             <option value="delivered">Delivered</option>
             <option value="cancelled">Cancelled</option>
+            <option value="rescheduling">Rescheduling</option>
           </select>
         </div>
       </div>
@@ -417,6 +417,19 @@
       </div>
 
       <div class="panel">
+        <h3>Route Sync — Tracked Plans</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:12px">Plans are auto-tracked from webhooks. Manually register a plan if a webhook was missed.</p>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <input id="plan-id-input" placeholder="Plan ID (e.g., plans/abc123 or just abc123)" style="flex:2;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px;font-family:'JetBrains Mono',monospace">
+          <input id="plan-date-input" type="date" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px">
+          <button class="btn btn-outline" onclick="registerPlanFromUI()">Track Plan</button>
+        </div>
+        <div id="tracked-plans-list" style="max-height:150px;overflow-y:auto">
+          <div style="color:#475569;font-size:12px">Loading...</div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
           <h3 style="margin-bottom:0">SMS Template</h3>
           <button class="btn btn-outline" onclick="toggleTemplateEdit()">Edit Template</button>
@@ -459,8 +472,8 @@
     }
 
     // ─── Store colors ──────────────────────────
-    const storeColors = { richmond: '#2dd4bf', somerset: '#818cf8', laurel: '#fb923c', london: '#f472b6', winchester: '#a3e635', georgetown: '#38bdf8', lexington: '#c084fc' };
-    const storeNames = { richmond: 'Richmond', somerset: 'Somerset', laurel: 'Laurel County', london: 'London', winchester: 'Winchester', georgetown: 'Georgetown', lexington: 'Nicholasville Rd' };
+    const storeColors = { somerset: '#818cf8', london: '#f472b6', georgetown: '#38bdf8', lexington: '#c084fc', other: '#64748b', unknown: '#475569' };
+    const storeNames = { somerset: 'Somerset', london: 'London', georgetown: 'Georgetown', lexington: 'Nicholasville Rd', other: 'Other', unknown: 'Unknown' };
 
     function storeDot(store) {
       const c = storeColors[store] || '#64748b';
@@ -481,8 +494,7 @@
     // ─── Toggle daily / all-time ────────────────
     function toggleStatsView() {
       showAllTime = !showAllTime;
-      document.getElementById('toggle-view-btn').textContent = showAllTime ? 'Show Today' : 'Show All-Time';
-      document.getElementById('overview-title').textContent = showAllTime ? 'All-Time Stats' : "Today's Deliveries";
+      document.getElementById('toggle-view-btn').textContent = showAllTime ? 'Show Next Delivery' : 'Show All-Time';
       loadStats();
     }
 
@@ -491,30 +503,37 @@
       try {
         const res = await fetch(API + '/api/stats');
         const data = await res.json();
+        const nd = data.nextDelivery || {};
 
-        // Pick daily or all-time
-        const s = showAllTime ? data.allTime : data.today;
-
-        document.getElementById('stat-sent').textContent = s.sent || 0;
-        document.getElementById('stat-pending').textContent = s.pending || 0;
-        document.getElementById('stat-failed').textContent = s.failed || 0;
-        document.getElementById('stat-delivered').textContent = s.delivered || 0;
-
-        // Subtitles
         if (showAllTime) {
+          const a = data.allTime;
+          document.getElementById('stat-sent').textContent = a.sent || 0;
+          document.getElementById('stat-pending').textContent = a.pending || 0;
+          document.getElementById('stat-confirmed').textContent = a.confirmedYes || 0;
+          document.getElementById('stat-declined').textContent = a.declinedNo || 0;
           document.getElementById('sub-sent').textContent = 'Total SMS sent';
           document.getElementById('sub-pending').textContent = 'Awaiting send';
-          document.getElementById('sub-failed').textContent = 'Needs attention';
-          document.getElementById('sub-delivered').textContent = 'Confirmed deliveries';
+          document.getElementById('sub-confirmed').textContent = 'Total confirmed';
+          document.getElementById('sub-declined').textContent = 'Total declined';
+          document.getElementById('overview-subtitle').textContent = `${a.total} total notifications processed`;
         } else {
-          document.getElementById('sub-sent').textContent = 'SMS sent for today';
+          document.getElementById('stat-sent').textContent = nd.sent || 0;
+          document.getElementById('stat-pending').textContent = nd.pending || 0;
+          document.getElementById('stat-confirmed').textContent = nd.confirmed || 0;
+          document.getElementById('stat-declined').textContent = nd.declined || 0;
+          document.getElementById('sub-sent').textContent = 'SMS sent';
           document.getElementById('sub-pending').textContent = 'Awaiting 6 PM send';
-          document.getElementById('sub-failed').textContent = 'Needs attention';
-          document.getElementById('sub-delivered').textContent = 'Replied YES';
+          document.getElementById('sub-confirmed').textContent = 'Replied YES';
+          document.getElementById('sub-declined').textContent = nd.rescheduling > 0 ? `${nd.rescheduling} rescheduling` : 'Replied NO';
+
+          const dateDisplay = nd.date ? formatDate(nd.date) : '—';
+          document.getElementById('overview-title').textContent = showAllTime ? 'All-Time Stats' : `Deliveries — ${dateDisplay}`;
+          const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+          document.getElementById('overview-subtitle').textContent = `${today} — ${nd.total || 0} stops on the route`;
         }
 
-        // Show send button if any pending
-        const totalPending = data.today.pending + (data.tomorrow?.pending || 0);
+        // Show send button if any pending for next delivery
+        const totalPending = nd.pending || 0;
         if (totalPending > 0) {
           document.getElementById('send-all-btn').style.display = '';
           document.getElementById('pending-badge').textContent = totalPending;
@@ -522,13 +541,7 @@
           document.getElementById('send-all-btn').style.display = 'none';
         }
 
-        // Date subtitle
-        const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-        document.getElementById('overview-subtitle').textContent = showAllTime
-          ? `${data.allTime.total} total notifications processed`
-          : `${today} — Automated via Spoke Dispatch → Quo SMS`;
-
-        // Tomorrow's queue
+        // Tomorrow's queue panel
         const tm = data.tomorrow || {};
         document.getElementById('tomorrow-date').textContent = formatDate(tm.date);
         document.getElementById('tomorrow-total').textContent = tm.total || 0;
@@ -642,6 +655,67 @@
       } catch (e) { showToast('Failed to delete'); }
     }
 
+    // ─── View Reschedule Conversation ────────────
+    async function viewConversation(notifId) {
+      try {
+        const res = await fetch(API + '/api/conversations/' + notifId);
+        const messages = await res.json();
+        if (messages.length === 0) {
+          alert('No conversation messages yet.');
+          return;
+        }
+        const text = messages.map(m => {
+          const time = new Date(m.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+          const who = m.role === 'customer' ? '👤 Customer' : '🤖 System';
+          return `${who} (${time}):\n${m.content}`;
+        }).join('\n\n');
+        alert(text);
+      } catch (e) { showToast('Failed to load conversation'); }
+    }
+
+    // ─── Register Plan ──────────────────────────
+    async function registerPlanFromUI() {
+      const planInput = document.getElementById('plan-id-input');
+      const dateInput = document.getElementById('plan-date-input');
+      const planId = planInput.value.trim();
+      const date = dateInput.value;
+      if (!planId || !date) { showToast('Enter plan ID and date'); return; }
+      try {
+        const res = await fetch(API + '/api/plans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planId, deliveryDate: date }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast('Plan registered — hit Sync Routes to import');
+          planInput.value = '';
+          loadTrackedPlans();
+        } else {
+          showToast(data.error || 'Failed');
+        }
+      } catch (e) { showToast('Failed to register plan'); }
+    }
+
+    async function loadTrackedPlans() {
+      try {
+        const res = await fetch(API + '/api/plans');
+        const plans = await res.json();
+        const container = document.getElementById('tracked-plans-list');
+        if (!container) return;
+        if (plans.length === 0) {
+          container.innerHTML = '<div style="color:#475569;font-size:12px">No tracked plans. Plans are auto-tracked from webhooks.</div>';
+          return;
+        }
+        container.innerHTML = plans.map(p =>
+          `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1e293b22;font-size:12px">
+            <span class="mono" style="color:#94a3b8">${p.plan_id}</span>
+            <span style="color:#64748b">${p.delivery_date || '—'}</span>
+          </div>`
+        ).join('');
+      } catch (e) {}
+    }
+
     // ─── Load Notifications ────────────────────
     async function loadNotifications() {
       const store = document.getElementById('filter-store').value;
@@ -669,10 +743,14 @@
             ? '<span style="color:#fbbf24;font-weight:600">⭐ Sent</span>'
             : n.store === 'other' ? '<span style="color:#475569">N/A</span>'
             : '<span style="color:#475569">—</span>';
-          return `<tr>
+          const convoDisplay = n.conversation_state === 'rescheduling'
+            ? `<span style="color:#fbbf24;font-size:11px;cursor:pointer" onclick="viewConversation(${n.id})">🔄 Rescheduling</span>`
+            : '';
+          return `<tr${n.status === 'cancelled' ? ' style="opacity:0.5"' : ''}>
           <td>
             <div style="font-weight:600">${n.customer_name}</div>
             <div class="mono" style="font-size:11px;color:#64748b">${n.phone}</div>
+            ${convoDisplay}
           </td>
           <td>${storeDot(n.store)}</td>
           <td style="color:#94a3b8">${n.scheduled_date || '—'}</td>
@@ -733,6 +811,8 @@
 
         document.getElementById('template-display').textContent = tmpl.body || 'No template set';
         document.getElementById('template-input').value = tmpl.body || '';
+
+        loadTrackedPlans();
       } catch (e) {
         console.error('Failed to load settings:', e);
       }
