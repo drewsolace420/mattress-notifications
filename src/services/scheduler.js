@@ -17,6 +17,7 @@
 const db = require("../database");
 const { sendSms } = require("./quo");
 const { getSmsBody, isSendDay } = require("./templates");
+const fetch = require("node-fetch");
 
 const SEND_HOUR = 18; // 6 PM
 const SEND_MINUTE = 0;
