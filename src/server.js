@@ -580,6 +580,9 @@ app.post("/api/quo/webhook", async (req, res) => {
         } catch (e) {
           console.error("[Quo Webhook] Failed to send STOP auto-reply:", e.message);
         }
+      } else {
+        console.log(`[Quo Webhook] Unrecognized response from ${notification.customer_name}: "${rawBody}"`);
+        logActivity("unrecognized_reply", `${notification.customer_name} sent unrecognized reply: "${rawBody.substring(0, 100)}"`, notification.id);
       }
     }
 

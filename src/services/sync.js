@@ -87,7 +87,11 @@ function parseDateFromRouteTitle(title) {
       const month = months[match[2]];
       if (month !== undefined) {
         const day = parseInt(match[3], 10);
-        const year = new Date().getFullYear();
+        const now = new Date();
+        let year = now.getFullYear();
+        // Handle year crossover: if route month is Jan-Feb and current month is Nov-Dec,
+        // the route is likely for next year
+        if (month <= 1 && now.getMonth() >= 10) year++;
         const date = new Date(year, month, day);
         return date.toISOString().split("T")[0];
       }

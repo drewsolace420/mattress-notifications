@@ -30,10 +30,14 @@ const SUMMARY_HOUR = 21; // 9 PM
 const SUMMARY_MINUTE = 0;
 const CHECK_INTERVAL_MS = 60 * 1000; // check every minute
 
-const STAFF_PHONES = ["+18593336243", "+19316500631"];
+const STAFF_PHONES = process.env.STAFF_PHONES
+  ? process.env.STAFF_PHONES.split(",").map((p) => p.trim()).filter(Boolean)
+  : ["+18593336243", "+19316500631"];
 
 let lastSendDate = null; // prevent double-sends on the same day
 let lastSummaryDate = null; // prevent double-summaries on the same day
+let isSending = false; // guard against concurrent send executions
+let isSummarizing = false; // guard against concurrent summary executions
 
 /**
  * Get current time in EST/EDT
@@ -52,14 +56,15 @@ function shouldSendNow() {
   const now = getESTNow();
   const today = now.toISOString().split("T")[0];
 
-  // Already sent today?
+  // Already sent today or currently sending?
   if (lastSendDate === today) return false;
+  if (isSending) return false;
 
   // Is it a send day (Mon–Fri)?
   if (!isSendDay(now)) return false;
 
-  // Is it 6 PM (or within the first minute of 6 PM)?
-  if (now.getHours() === SEND_HOUR && now.getMinutes() >= SEND_MINUTE) {
+  // Is it 6 PM or later? (>= handles server restarts after 6 PM)
+  if (now.getHours() >= SEND_HOUR) {
     return true;
   }
 
@@ -71,6 +76,7 @@ function shouldSendNow() {
  * Finds all pending notifications for tomorrow and sends them.
  */
 async function executeDailySend() {
+  isSending = true;
   const now = getESTNow();
   const today = now.toISOString().split("T")[0];
 
@@ -90,10 +96,13 @@ async function executeDailySend() {
     )
     .all(tomorrowStr);
 
+  // Set lastSendDate early to prevent concurrent re-entry
+  lastSendDate = today;
+
   if (pending.length === 0) {
     console.log(`[Scheduler] No pending notifications for ${tomorrowStr}`);
     logActivity("scheduler_run", `Daily send — no pending notifications for ${tomorrowStr}`);
-    lastSendDate = today;
+    isSending = false;
     return { sent: 0, failed: 0 };
   }
 
@@ -151,7 +160,7 @@ async function executeDailySend() {
     `Daily 6 PM send complete — ${results.sent} sent, ${results.failed} failed for ${tomorrowStr}`
   );
 
-  lastSendDate = today;
+  isSending = false;
   return results;
 }
 
@@ -194,6 +203,7 @@ async function checkAndSend() {
     } catch (err) {
       console.error("[Scheduler] Fatal error during daily send:", err);
       logActivity("scheduler_error", `Fatal error: ${err.message}`);
+      isSending = false;
     }
   }
 
@@ -203,6 +213,7 @@ async function checkAndSend() {
     } catch (err) {
       console.error("[Scheduler] Fatal error during staff summary:", err);
       logActivity("scheduler_error", `Staff summary error: ${err.message}`);
+      isSummarizing = false;
     }
   }
 }
@@ -215,9 +226,11 @@ function shouldSendSummary() {
   const today = now.toISOString().split("T")[0];
 
   if (lastSummaryDate === today) return false;
+  if (isSummarizing) return false;
   if (!isSendDay(now)) return false;
 
-  if (now.getHours() === SUMMARY_HOUR && now.getMinutes() >= SUMMARY_MINUTE) {
+  // Must be after 9 PM but also after the daily send (>= handles server restarts)
+  if (now.getHours() >= SUMMARY_HOUR) {
     return true;
   }
 
@@ -297,8 +310,10 @@ ${JSON.stringify(data, null, 2)}`;
  * Falls back to a simple template if the API call fails.
  */
 async function executeStaffSummary() {
+  isSummarizing = true;
   const now = getESTNow();
   const today = now.toISOString().split("T")[0];
+  lastSummaryDate = today; // set early to prevent concurrent re-entry
 
   // Tomorrow's date
   const tomorrow = new Date(now);
@@ -405,7 +420,7 @@ async function executeStaffSummary() {
   console.log(`[Scheduler] Staff summary complete — sent to ${sentCount} recipients`);
   console.log(`[Scheduler] ═══════════════════════════════════════\n`);
 
-  lastSummaryDate = today;
+  isSummarizing = false;
   return { sent: sentCount };
 }
 
