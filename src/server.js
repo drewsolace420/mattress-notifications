@@ -724,7 +724,7 @@ app.get("/api/reviews/comparison", (req, res) => {
 
 // ─── Tracked Redirect Endpoint ───────────────────────────
 // Short URL that logs the click, then redirects to the actual Google review page
-app.get("/api/r/:trackingId", (req, res) => {
+app.get("/r/:trackingId", (req, res) => {
   const { trackingId } = req.params;
   const reviewUrl = recordClick(trackingId);
 

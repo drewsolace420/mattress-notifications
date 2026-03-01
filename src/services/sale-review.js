@@ -8,7 +8,7 @@
  *   1. Staff enters customer name, phone, sale number in dashboard
  *   2. Sale number prefix → store resolution (same 1-5 mapping)
  *   3. Claude Sonnet 4.5 generates a warm, personalized SMS
- *   4. Review link uses tracked redirect: /api/r/:trackingId → Google review page
+ *   4. Review link uses tracked redirect: /r/:trackingId → Google review page
  *   5. SMS sent immediately via Quo
  *
  * COMPARISON TRACKING:
@@ -60,7 +60,8 @@ function cleanPhone(phone) {
 }
 
 function generateTrackingId() {
-  return crypto.randomBytes(8).toString("hex");
+  // Short 6-char base36 ID (compact for SMS links)
+  return crypto.randomBytes(4).toString("hex").substring(0, 6);
 }
 
 function logActivity(type, detail, notificationId = null) {
@@ -176,7 +177,8 @@ async function processSaleReview({ customerName, phone, saleNumber, baseUrl }) {
 
   // Generate tracking ID and tracked redirect URL
   const trackingId = generateTrackingId();
-  const trackedLink = `${baseUrl}/api/r/${trackingId}`;
+  const shortBase = process.env.SHORT_BASE_URL || baseUrl;
+  const trackedLink = `${shortBase}/r/${trackingId}`;
 
   // Generate AI message via Claude Sonnet 4.5
   const aiMessage = await generateReviewMessage(firstName, storeName);
