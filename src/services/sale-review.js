@@ -20,54 +20,17 @@ const db = require("../database");
 const { sendSms } = require("./quo");
 const fetch = require("node-fetch");
 const crypto = require("crypto");
-
-// ─── Store mappings (mirrored from spoke.js) ─────────────
-const SALE_PREFIX_TO_STORE = {
-  "1": "other",
-  "2": "lexington",
-  "3": "georgetown",
-  "4": "somerset",
-  "5": "london",
-};
-
-const STORE_REVIEW_LINKS = {
-  somerset: "https://g.page/r/CcHG8jVFzOK1EBM/review",
-  lexington: "https://g.page/r/CRCnucIb-t91EBM/review",
-  london: "https://g.page/r/CW69HHcXCceJEBM/review",
-  georgetown: "https://g.page/r/CZQNrg3DMJIdEBM/review",
-};
-
-const STORE_DISPLAY_NAMES = {
-  somerset: "Mattress Overstock - Somerset",
-  lexington: "Mattress Overstock - Nicholasville Road",
-  london: "Mattress Overstock - London",
-  georgetown: "Mattress Overstock - Georgetown",
-  other: "Mattress Overstock",
-};
-
-function resolveStoreFromSaleNumber(saleNumber) {
-  if (!saleNumber) return "unknown";
-  const prefix = String(saleNumber).trim().charAt(0);
-  return SALE_PREFIX_TO_STORE[prefix] || "unknown";
-}
-
-function cleanPhone(phone) {
-  if (!phone) return "";
-  let cleaned = phone.replace(/[^\d+]/g, "");
-  if (cleaned.length === 10) cleaned = "+1" + cleaned;
-  if (cleaned.length === 11 && cleaned.startsWith("1")) cleaned = "+" + cleaned;
-  return cleaned;
-}
+const {
+  STORE_REVIEW_LINKS,
+  STORE_DISPLAY_NAMES,
+  resolveStoreFromSaleNumber,
+  cleanPhone,
+  logActivity,
+} = require("./utils");
 
 function generateTrackingId() {
   // Short 6-char base36 ID (compact for SMS links)
   return crypto.randomBytes(4).toString("hex").substring(0, 6);
-}
-
-function logActivity(type, detail, notificationId = null) {
-  db.prepare(
-    "INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)"
-  ).run(type, detail, notificationId, new Date().toISOString());
 }
 
 /**
@@ -381,8 +344,4 @@ module.exports = {
   processSaleReview,
   recordClick,
   getComparisonData,
-  resolveStoreFromSaleNumber,
-  cleanPhone,
-  STORE_REVIEW_LINKS,
-  STORE_DISPLAY_NAMES,
 };

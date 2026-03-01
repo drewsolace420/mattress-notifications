@@ -19,86 +19,17 @@
 const db = require("../database");
 const fetch = require("node-fetch");
 const { computeDeliveryWindow, isDeliveryDay, isSendDay } = require("./templates");
+const {
+  SPOKE_API_BASE,
+  STORE_DISPLAY_NAMES,
+  resolveStoreFromSaleNumber,
+  extractSaleNumber,
+  cleanPhone,
+  logActivity,
+  getESTNow,
+} = require("./utils");
 
-const SPOKE_API_BASE = "https://api.getcircuit.com/public/v0.2b";
 const SYNC_INTERVAL_MS = 60 * 1000; // check every minute, decide frequency inside
-
-const SALE_PREFIX_TO_STORE = {
-  "1": "other",
-  "2": "lexington",
-  "3": "georgetown",
-  "4": "somerset",
-  "5": "london",
-};
-
-const STORE_DISPLAY_NAMES = {
-  somerset: "Mattress Overstock - Somerset",
-  lexington: "Mattress Overstock - Nicholasville Road",
-  london: "Mattress Overstock - London",
-  georgetown: "Mattress Overstock - Georgetown",
-  other: "Mattress Overstock",
-};
-
-function resolveStoreFromSaleNumber(saleNumber) {
-  if (!saleNumber) return "unknown";
-  const prefix = String(saleNumber).charAt(0);
-  return SALE_PREFIX_TO_STORE[prefix] || "unknown";
-}
-
-function extractSaleNumber(customProperties) {
-  if (!customProperties || typeof customProperties !== "object") return null;
-  const byName =
-    customProperties["Sale Number"] ||
-    customProperties["sale_number"] ||
-    customProperties["saleNumber"] ||
-    customProperties["Sale number"] ||
-    customProperties["sale number"] ||
-    null;
-  if (byName) return byName;
-  const values = Object.values(customProperties);
-  if (values.length > 0 && values[0]) return values[0];
-  return null;
-}
-
-function cleanPhone(phone) {
-  if (!phone) return "";
-  let cleaned = phone.replace(/[^\d+]/g, "");
-  if (cleaned.length === 10) cleaned = "+1" + cleaned;
-  if (cleaned.length === 11 && cleaned.startsWith("1")) cleaned = "+" + cleaned;
-  return cleaned;
-}
-
-function logActivity(type, detail, notificationId = null) {
-  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
-    type, detail, notificationId, new Date().toISOString()
-  );
-}
-
-function getESTNow() {
-  return new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-}
-
-function parseDateFromRouteTitle(title) {
-  if (!title) return null;
-  try {
-    const match = title.match(/(\w+),\s+(\w+)\s+(\d+)/);
-    if (match) {
-      const months = { Jan:0, Feb:1, Mar:2, Apr:3, May:4, Jun:5, Jul:6, Aug:7, Sep:8, Oct:9, Nov:10, Dec:11 };
-      const month = months[match[2]];
-      if (month !== undefined) {
-        const day = parseInt(match[3], 10);
-        const now = new Date();
-        let year = now.getFullYear();
-        // Handle year crossover: if route month is Jan-Feb and current month is Nov-Dec,
-        // the route is likely for next year
-        if (month <= 1 && now.getMonth() >= 10) year++;
-        const date = new Date(year, month, day);
-        return date.toISOString().split("T")[0];
-      }
-    }
-  } catch (e) {}
-  return null;
-}
 
 // ─── Spoke API ───────────────────────────────────────────
 

@@ -23,6 +23,7 @@ const db = require("../database");
 const fetch = require("node-fetch");
 const { sendSms } = require("./quo");
 const { getSmsBody, isSendDay } = require("./templates");
+const { logActivity, getESTNow } = require("./utils");
 
 const SEND_HOUR = 18; // 6 PM
 const SEND_MINUTE = 0;
@@ -38,15 +39,6 @@ let lastSendDate = null; // prevent double-sends on the same day
 let lastSummaryDate = null; // prevent double-summaries on the same day
 let isSending = false; // guard against concurrent send executions
 let isSummarizing = false; // guard against concurrent summary executions
-
-/**
- * Get current time in EST/EDT
- */
-function getESTNow() {
-  return new Date(
-    new Date().toLocaleString("en-US", { timeZone: "America/New_York" })
-  );
-}
 
 /**
  * Check if it's time to send (6 PM EST on a weekday)
@@ -166,12 +158,6 @@ async function executeDailySend() {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function logActivity(type, detail, notificationId = null) {
-  db.prepare(
-    "INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)"
-  ).run(type, detail, notificationId, new Date().toISOString());
 }
 
 /**

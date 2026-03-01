@@ -20,8 +20,7 @@
 const fetch = require("node-fetch");
 const db = require("../database");
 const { sendSms } = require("./quo");
-
-const SPOKE_API_BASE = "https://api.getcircuit.com/public/v0.2b";
+const { SPOKE_API_BASE, logActivity } = require("./utils");
 
 // ─── Store Delivery Day Rules ───────────────────────────
 // Day numbers: 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
@@ -65,13 +64,6 @@ const BLACKOUT_DATES = [
   "2027-12-24", // Christmas Eve 2027
   "2027-12-25", // Christmas Day 2027
 ];
-
-const SALE_PREFIX_TO_STORE = {
-  "2": "lexington",
-  "3": "georgetown",
-  "4": "somerset",
-  "5": "london",
-};
 
 /**
  * Handle an incoming text from a customer who is in rescheduling mode.
@@ -489,15 +481,6 @@ async function startRescheduleConversation(notification) {
   logActivity("reschedule_started", `Reschedule conversation started with ${notification.customer_name}`, notification.id);
 
   return { reply: message, rescheduled: false };
-}
-
-function logActivity(type, detail, notificationId = null) {
-  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
-    type,
-    detail,
-    notificationId,
-    new Date().toISOString()
-  );
 }
 
 module.exports = { handleRescheduleMessage, startRescheduleConversation };

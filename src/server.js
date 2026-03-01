@@ -10,8 +10,9 @@ const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates")
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
 const { syncRoutes, startAutoSync, registerPlan, getTrackedPlans } = require("./services/sync");
-const { processSaleReview, recordClick, getComparisonData, cleanPhone } = require("./services/sale-review");
+const { processSaleReview, recordClick, getComparisonData } = require("./services/sale-review");
 const { parsePosCsv } = require("./services/pos-parser");
+const { cleanPhone, logActivity } = require("./services/utils");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -962,15 +963,6 @@ app.get("/r/:trackingId", (req, res) => {
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../public/index.html"));
 });
-
-// ─── Helper ──────────────────────────────────────────────
-function logActivity(type, detail, notificationId = null) {
-  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)")
-    .run(type, detail, notificationId, new Date().toISOString());
-}
-
-// Make logActivity available to other modules
-app.locals.logActivity = logActivity;
 
 // ─── Start Server ────────────────────────────────────────
 app.listen(PORT, () => {

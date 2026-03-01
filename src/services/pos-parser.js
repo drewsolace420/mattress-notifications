@@ -12,25 +12,7 @@
  *   3: SKU             7: City            11: Email       15: Retail Price     19: (flag)
  */
 
-const SALE_PREFIX_TO_STORE = {
-  "1": "other",
-  "2": "lexington",
-  "3": "georgetown",
-  "4": "somerset",
-  "5": "london",
-};
-
-/**
- * Clean a phone number: strip formatting, ensure +1 prefix.
- * Mirrors cleanPhone() from sale-review.js.
- */
-function cleanPhone(phone) {
-  if (!phone) return "";
-  let cleaned = phone.replace(/[^\d+]/g, "");
-  if (cleaned.length === 10) cleaned = "+1" + cleaned;
-  if (cleaned.length === 11 && cleaned.startsWith("1")) cleaned = "+" + cleaned;
-  return cleaned;
-}
+const { SALE_PREFIX_TO_STORE, cleanPhone } = require("./utils");
 
 /**
  * Format a POS customer name from "lastname firstname" to "Firstname Lastname".
@@ -220,4 +202,4 @@ function parsePosCsv(csvText) {
   return results;
 }
 
-module.exports = { parsePosCsv, formatCustomerName, cleanPhone };
+module.exports = { parsePosCsv, formatCustomerName };
