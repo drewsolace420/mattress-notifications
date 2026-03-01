@@ -72,6 +72,42 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../public")));
 
+// ─── Authentication ─────────────────────────────────────
+function requireAuth(req, res, next) {
+  // Public paths — no auth needed
+  if (req.path === "/api/health") return next();
+  if (req.path === "/api/spoke/webhook") return next();
+  if (req.path === "/api/quo/webhook") return next();
+  if (req.path === "/api/auth/verify") return next();
+  if (req.path.startsWith("/r/")) return next();
+
+  // Static files (dashboard HTML/CSS/JS/images) — served without auth
+  if (!req.path.startsWith("/api/")) return next();
+
+  // Check admin password
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) return next(); // No password set = open access (local dev)
+
+  const authHeader = req.headers.authorization;
+  if (authHeader === `Bearer ${password}`) return next();
+
+  res.status(401).json({ error: "Unauthorized" });
+}
+
+app.use(requireAuth);
+
+// ─── Auth Verification Endpoint ─────────────────────────
+app.post("/api/auth/verify", (req, res) => {
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) return res.json({ valid: true, authRequired: false });
+
+  const authHeader = req.headers.authorization;
+  if (authHeader === `Bearer ${password}`) {
+    return res.json({ valid: true });
+  }
+  res.status(401).json({ valid: false });
+});
+
 // ─── Health Check ────────────────────────────────────────
 app.get("/api/health", (req, res) => {
   res.json({
