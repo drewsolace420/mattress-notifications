@@ -75,7 +75,7 @@ function logActivity(type, detail, notificationId = null) {
  * Returns { timingContext, timingPrompt } for the AI prompt.
  */
 function getSaleTimingContext(saleDate) {
-  if (!saleDate) return { timingContext: "today", timingPrompt: "They're still in the store or just left." };
+  if (!saleDate) return { timingContext: "today", timingPrompt: "They visited the store today." };
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -84,13 +84,13 @@ function getSaleTimingContext(saleDate) {
   const diffDays = Math.round((today - sale) / (1000 * 60 * 60 * 24));
 
   if (diffDays <= 0) {
-    return { timingContext: "today", timingPrompt: "They're still in the store or just left." };
+    return { timingContext: "today", timingPrompt: "They visited the store today." };
   } else if (diffDays === 1) {
-    return { timingContext: "yesterday", timingPrompt: "They purchased yesterday." };
+    return { timingContext: "yesterday", timingPrompt: "They visited the store yesterday." };
   } else if (diffDays <= 3) {
-    return { timingContext: `${diffDays} days ago`, timingPrompt: `They purchased ${diffDays} days ago.` };
+    return { timingContext: `${diffDays} days ago`, timingPrompt: `They visited the store ${diffDays} days ago.` };
   } else {
-    return { timingContext: "recently", timingPrompt: "They purchased recently." };
+    return { timingContext: "recently", timingPrompt: "They visited the store recently." };
   }
 }
 
@@ -108,7 +108,7 @@ async function generateReviewMessage(customerFirstName, storeName, saleDate) {
   if (!apiKey) {
     // Fallback template if no API key
     console.log("[SaleReview] No ANTHROPIC_API_KEY — using template fallback");
-    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} ${timingContext}. We'd love to hear about your experience — your review helps our small team a lot!`;
+    return `Hi ${customerFirstName}! Thank you for visiting ${storeName} ${timingContext}. We'd love to hear about your experience in the store — your review helps our small team a lot!`;
   }
 
   try {
@@ -122,7 +122,7 @@ async function generateReviewMessage(customerFirstName, storeName, saleDate) {
       body: JSON.stringify({
         model: "claude-sonnet-4-5-20250929",
         max_tokens: 200,
-        system: `You write short, warm SMS messages asking customers to leave a Google review for a mattress store. Rules:
+        system: `You write short, warm SMS messages asking customers to leave a Google review for a mattress store. The review is about their IN-STORE shopping experience — the staff, the service, the atmosphere. Rules:
 - Use the customer's first name naturally
 - Mention the store name once
 - Keep it under 250 characters (CRITICAL — this is an SMS)
@@ -132,11 +132,12 @@ async function generateReviewMessage(customerFirstName, storeName, saleDate) {
 - Don't include any links — the link will be appended separately
 - Don't say "click" or "tap" — just end with something natural that flows into a link
 - Vary your messages — don't always start with "Hi" or "Hey"
-- IMPORTANT: The customer purchased ${timingContext}. Use appropriate timing language — do NOT say "today" if they bought yesterday or earlier.`,
+- IMPORTANT: Focus on their shopping/store experience, NOT the product itself. They may not have received their mattress yet — do NOT mention delivery, sleeping on it, or how the mattress feels.
+- The customer visited ${timingContext}. Use appropriate timing language — do NOT say "today" if they visited yesterday or earlier.`,
         messages: [
           {
             role: "user",
-            content: `Write an SMS review request for ${customerFirstName} who purchased from ${storeName}. ${timingPrompt} Keep it brief and warm.`,
+            content: `Write an SMS review request for ${customerFirstName} who shopped at ${storeName}. ${timingPrompt} Ask about their in-store experience. Keep it brief and warm.`,
           },
         ],
       }),
@@ -158,7 +159,7 @@ async function generateReviewMessage(customerFirstName, storeName, saleDate) {
     return aiMessage;
   } catch (err) {
     console.error("[SaleReview] Claude generation failed, using fallback:", err.message);
-    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} ${timingContext}. We'd love to hear about your experience — your review helps our small team a lot!`;
+    return `Hi ${customerFirstName}! Thank you for visiting ${storeName} ${timingContext}. We'd love to hear about your experience in the store — your review helps our small team a lot!`;
   }
 }
 
