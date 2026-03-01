@@ -109,6 +109,7 @@
     <button class="active" data-tab="overview">Overview</button>
     <button data-tab="notifications">Notifications</button>
     <button data-tab="reports">Reports</button>
+    <button data-tab="sale-reviews">Sale Reviews</button>
     <button data-tab="settings">Settings</button>
   </nav>
   <main>
@@ -204,17 +205,95 @@
       <div class="grid-2"><div class="panel"><h3>Deliveries by Store</h3><div style="position:relative;height:260px"><canvas id="chart-stores"></canvas></div></div><div class="panel"><h3>Delivery Time Windows</h3><div style="position:relative;height:260px"><canvas id="chart-windows"></canvas></div></div></div>
       <div class="panel"><h3>Store Performance</h3><table><thead><tr><th>Store</th><th>Deliveries</th><th>Confirmed</th><th>Declined</th><th>Confirm %</th><th>Reviews Sent</th></tr></thead><tbody id="store-perf-table"><tr><td colspan="6" class="loading">Loading...</td></tr></tbody></table></div>
     </div>
+    <!-- ═══ NEW: Sale Reviews Tab ═══ -->
+    <div id="tab-sale-reviews" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px">Day-of-Sale Reviews</h2>
+          <p style="color:#64748b;font-size:13px;margin-top:4px">Send AI-generated review requests at point of sale — compare with delivery-day reviews</p>
+        </div>
+      </div>
+      <!-- Entry Form -->
+      <div class="panel" style="border-left:3px solid #fbbf24">
+        <h3 style="display:flex;align-items:center;gap:8px"><span style="font-size:18px">⭐</span> New Sale Review Request</h3>
+        <p style="font-size:12px;color:#64748b;margin-bottom:16px">Enter customer details to send an AI-generated Google review request via SMS. Claude generates a unique, personalized message for each customer.</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Customer Name</label>
+            <input id="sr-name" type="text" placeholder="John Smith" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:inherit">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Phone Number</label>
+            <input id="sr-phone" type="tel" placeholder="(859) 555-0142" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:inherit">
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:600;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Sale Number</label>
+            <input id="sr-sale" type="text" placeholder="20162800" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:'JetBrains Mono',monospace">
+          </div>
+          <button id="sr-submit-btn" class="btn btn-primary" onclick="submitSaleReview()" style="padding:10px 20px;white-space:nowrap">
+            ⭐ Send Review Request
+          </button>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:#475569">
+          <strong style="color:#64748b">Sale prefix:</strong>
+          <span style="color:#c084fc">2</span>=Nicholasville Rd &nbsp;
+          <span style="color:#38bdf8">3</span>=Georgetown &nbsp;
+          <span style="color:#818cf8">4</span>=Somerset &nbsp;
+          <span style="color:#f472b6">5</span>=London &nbsp;
+          <span style="color:#64748b">1</span>=Other (no review)
+        </div>
+      </div>
+      <!-- Comparison KPIs -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px">
+        <div class="panel" style="border-top:3px solid #fbbf24">
+          <h3 style="font-size:14px;color:#fbbf24;margin-bottom:14px">📍 Day-of-Sale Reviews</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#fbbf24" id="sr-sale-total">—</div><div style="font-size:11px;color:#64748b">Sent</div></div>
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#2dd4bf" id="sr-sale-clicked">—</div><div style="font-size:11px;color:#64748b">Clicked</div></div>
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#e2e8f0" id="sr-sale-rate">—</div><div style="font-size:11px;color:#64748b">Click Rate</div></div>
+          </div>
+        </div>
+        <div class="panel" style="border-top:3px solid #818cf8">
+          <h3 style="font-size:14px;color:#818cf8;margin-bottom:14px">🚚 Delivery-Day Reviews</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#818cf8" id="sr-delivery-total">—</div><div style="font-size:11px;color:#64748b">Sent</div></div>
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#2dd4bf" id="sr-delivery-clicked">—</div><div style="font-size:11px;color:#64748b">Clicked</div></div>
+            <div style="text-align:center"><div style="font-size:28px;font-weight:800;color:#e2e8f0" id="sr-delivery-rate">—</div><div style="font-size:11px;color:#64748b">Click Rate</div></div>
+          </div>
+        </div>
+      </div>
+      <!-- Comparison Chart -->
+      <div class="panel" style="margin-top:18px">
+        <h3>Click-Through Comparison</h3>
+        <div style="position:relative;height:260px"><canvas id="chart-review-comparison"></canvas></div>
+      </div>
+      <!-- Sale Reviews Table -->
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:24px;margin-bottom:14px">
+        <h3 style="font-size:16px;font-weight:700">Recent Sale Reviews</h3>
+        <select id="sr-filter-store" onchange="loadSaleReviews()" style="padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px;font-weight:500;cursor:pointer;font-family:inherit">
+          <option value="">All Stores</option>
+          <option value="lexington">Nicholasville Rd</option>
+          <option value="georgetown">Georgetown</option>
+          <option value="somerset">Somerset</option>
+          <option value="london">London</option>
+        </select>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table><thead><tr><th>Customer</th><th>Store</th><th>Sale #</th><th>AI Message</th><th>Status</th><th>Clicked</th><th>Sent At</th><th>Actions</th></tr></thead><tbody id="sr-table"><tr><td colspan="8" class="loading">Loading sale reviews...</td></tr></tbody></table></div>
+      </div>
+    </div>
+    <!-- ═══ END Sale Reviews Tab ═══ -->
     <div id="tab-settings" style="display:none">
       <h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Configuration</h2>
       <div class="panel"><h3>API Connections</h3><div class="grid-2"><div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong style="font-size:14px">Spoke Dispatch</strong><span id="spoke-config-status" style="font-size:11px;font-weight:600">Checking...</span></div><div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">Webhook URL</div><input readonly id="webhook-url" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace" value="Loading..."><div style="font-size:11px;color:#475569;margin-top:8px">Copy this URL into Spoke Dispatch → Settings → Integrations → Webhooks</div></div><div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong style="font-size:14px">Quo (SMS)</strong><span id="quo-config-status" style="font-size:11px;font-weight:600">Checking...</span></div><div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">API Endpoint</div><input readonly value="https://api.quo.com/v1/messages" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace"><div style="font-size:11px;color:#475569;margin-top:8px">Set QUO_API_KEY and QUO_PHONE_NUMBER_ID in Railway environment variables</div></div></div></div>
-      <div class="panel"><h3>Route Sync — Tracked Plans</h3><p style="font-size:12px;color:#64748b;margin-bottom:12px">Plans are auto-tracked from webhooks. Manually register a plan if a webhook was missed.</p><div style="display:flex;gap:8px;margin-bottom:12px"><input id="plan-id-input" placeholder="Plan ID (e.g., plans/abc123 or just abc123)" style="flex:2;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px;font-family:'JetBrains Mono',monospace"><input id="plan-date-input" type="date" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px"><button class="btn btn-outline" onclick="registerPlanFromUI()">Track Plan</button></div><div id="tracked-plans-list" style="max-height:150px;overflow-y:auto"><div style="color:#475569;font-size:12px">Loading...</div></div></div>
+      <div class="panel"><h3>Route Sync — Tracked Plans</h3><p style="font-size:12px;color:#64748b;margin-bottom:12px">Manually register a plan if a webhook was missed.</p><div style="display:flex;gap:8px;margin-bottom:12px"><input id="plan-id-input" placeholder="Plan ID (e.g., plans/abc123 or just abc123)" style="flex:2;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px;font-family:'JetBrains Mono',monospace"><input id="plan-date-input" type="date" style="flex:1;padding:8px 12px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:12px"><button class="btn btn-outline" onclick="registerPlanFromUI()">Track Plan</button></div><div id="tracked-plans-list" style="max-height:150px;overflow-y:auto"><div style="color:#475569;font-size:12px">Loading...</div></div></div>
       <div class="panel"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><h3 style="margin-bottom:0">SMS Template</h3><button class="btn btn-outline" onclick="toggleTemplateEdit()">Edit Template</button></div><div id="template-display" style="padding:16px;background:#1e293b44;border-radius:8px;border:1px solid #1e293b;font-size:13px;color:#94a3b8;line-height:1.7">Loading...</div><div id="template-editor" style="display:none;margin-top:12px"><textarea id="template-input" rows="4" style="width:100%;padding:10px 14px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#e2e8f0;font-size:13px;font-family:'DM Sans',system-ui;resize:vertical;line-height:1.7"></textarea><div style="font-size:11px;color:#475569;line-height:1.6;margin-top:6px"><strong style="color:#64748b">Variables:</strong> {{customer_first}}, {{customer_last}}, {{date}}, {{time_window}}, {{driver}}, {{store}}, {{product}}, {{address}}, {{business_name}}</div><button class="btn btn-primary" style="margin-top:12px" onclick="saveTemplate()">Save Template</button></div></div>
     </div>
   </main>
   <script>
     const API = '';
     let showAllTime = false;
-    document.querySelectorAll('nav button').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('nav button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none'); document.getElementById('tab-' + btn.dataset.tab).style.display = ''; if (btn.dataset.tab === 'notifications') loadNotifications(); if (btn.dataset.tab === 'reports') loadCharts(); if (btn.dataset.tab === 'settings') loadSettings(); }); });
+    document.querySelectorAll('nav button').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('nav button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none'); document.getElementById('tab-' + btn.dataset.tab).style.display = ''; if (btn.dataset.tab === 'notifications') loadNotifications(); if (btn.dataset.tab === 'reports') loadCharts(); if (btn.dataset.tab === 'settings') loadSettings(); if (btn.dataset.tab === 'sale-reviews') { loadSaleReviews(); loadReviewComparison(); } }); });
     function showToast(msg) { const t = document.getElementById('toast'); t.textContent = '✓ ' + msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
     const storeColors = { somerset: '#818cf8', london: '#f472b6', georgetown: '#38bdf8', lexington: '#c084fc', other: '#64748b', unknown: '#475569' };
     const storeNames = { somerset: 'Somerset', london: 'London', georgetown: 'Georgetown', lexington: 'Nicholasville Rd', other: 'Other', unknown: 'Unknown' };
@@ -242,7 +321,64 @@
     Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = '#1e293b22'; Chart.defaults.font.family = "'DM Sans', sans-serif"; Chart.defaults.responsive = true; Chart.defaults.maintainAspectRatio = false; Chart.defaults.animation = { duration: 400 };
     let dailyChart, responsesChart, storesChart, windowsChart;
     function destroyCharts() { if (dailyChart) { dailyChart.destroy(); dailyChart = null; } if (responsesChart) { responsesChart.destroy(); responsesChart = null; } if (storesChart) { storesChart.destroy(); storesChart = null; } if (windowsChart) { windowsChart.destroy(); windowsChart = null; } }
-    async function loadCharts() { const reportsTab = document.getElementById('tab-reports'); if (reportsTab.style.display === 'none') return; const days = document.getElementById('chart-days').value; try { const [dailyRes, responseRes, storeRes, windowRes] = await Promise.all([fetch(API + '/api/charts/daily?days=' + days), fetch(API + '/api/charts/responses'), fetch(API + '/api/charts/stores'), fetch(API + '/api/charts/time-windows')]); const daily = await dailyRes.json(); const responses = await responseRes.json(); const stores = await storeRes.json(); const windows = await windowRes.json(); const confirmRate = responses.total > 0 ? Math.round((responses.yes / responses.total) * 100) : 0; const declineRate = responses.total > 0 ? Math.round((responses.no / responses.total) * 100) : 0; const noReplyRate = responses.total > 0 ? Math.round((responses.noReply / responses.total) * 100) : 0; document.getElementById('kpi-confirm-rate').textContent = confirmRate + '%'; document.getElementById('kpi-confirm-sub').textContent = `${responses.yes} of ${responses.total} sent`; document.getElementById('kpi-decline-rate').textContent = declineRate + '%'; document.getElementById('kpi-decline-sub').textContent = `${responses.no} need rescheduling`; document.getElementById('kpi-reviews').textContent = responses.reviewsSent; document.getElementById('kpi-reviews-sub').textContent = 'Google review requests'; document.getElementById('kpi-noreply').textContent = noReplyRate + '%'; document.getElementById('kpi-noreply-sub').textContent = `${responses.noReply} no response`; destroyCharts(); const dailyLabels = daily.map(d => { const dt = new Date(d.date + 'T12:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }); const dailyCtx = document.getElementById('chart-daily').getContext('2d'); dailyChart = new Chart(dailyCtx, { type: 'bar', data: { labels: dailyLabels, datasets: [{ label: 'Confirmed', data: daily.map(d => d.confirmed), backgroundColor: '#2dd4bf', borderRadius: 4, borderSkipped: false }, { label: 'Declined', data: daily.map(d => d.declined), backgroundColor: '#ef4444', borderRadius: 4, borderSkipped: false }, { label: 'No Reply', data: daily.map(d => d.total - d.confirmed - d.declined), backgroundColor: '#334155', borderRadius: 4, borderSkipped: false }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 } } }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#1e293b44' } } } } }); const respCtx = document.getElementById('chart-responses').getContext('2d'); responsesChart = new Chart(respCtx, { type: 'doughnut', data: { labels: ['Confirmed (YES)', 'Declined (NO)', 'Opted Out (STOP)', 'No Reply'], datasets: [{ data: [responses.yes, responses.no, responses.stop, responses.noReply], backgroundColor: ['#2dd4bf', '#ef4444', '#64748b', '#334155'], borderWidth: 0, hoverOffset: 6 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 14, font: { size: 11 } } }, tooltip: { callbacks: { label: function(ctx) { const total = ctx.dataset.data.reduce((a, b) => a + b, 0); const pct = total > 0 ? Math.round((ctx.raw / total) * 100) : 0; return ` ${ctx.label}: ${ctx.raw} (${pct}%)`; } } } } } }); const storeCtx = document.getElementById('chart-stores').getContext('2d'); const storeLabels = stores.map(s => storeNames[s.store] || s.store); storesChart = new Chart(storeCtx, { type: 'bar', data: { labels: storeLabels, datasets: [{ label: 'Confirmed', data: stores.map(s => s.confirmed), backgroundColor: '#2dd4bf', borderRadius: 4, borderSkipped: false }, { label: 'Declined', data: stores.map(s => s.declined), backgroundColor: '#ef4444', borderRadius: 4, borderSkipped: false }, { label: 'Other', data: stores.map(s => s.total - s.confirmed - s.declined), backgroundColor: '#334155', borderRadius: 4, borderSkipped: false }] }, options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#1e293b44' } }, y: { stacked: true, grid: { display: false }, ticks: { font: { size: 12, weight: 600 } } } } } }); const winCtx = document.getElementById('chart-windows').getContext('2d'); const winColors = ['#2dd4bf', '#818cf8', '#fb923c', '#f472b6', '#a3e635', '#38bdf8', '#c084fc', '#fbbf24', '#ef4444', '#64748b']; windowsChart = new Chart(winCtx, { type: 'polarArea', data: { labels: windows.map(w => w.time_window.replace('between ', '')), datasets: [{ data: windows.map(w => w.count), backgroundColor: windows.map((_, i) => winColors[i % winColors.length] + '99'), borderColor: windows.map((_, i) => winColors[i % winColors.length]), borderWidth: 1.5 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 12, font: { size: 10 } } } }, scales: { r: { ticks: { display: false }, grid: { color: '#1e293b44' }, beginAtZero: true } } } }); const tbody = document.getElementById('store-perf-table'); if (stores.length === 0) { tbody.innerHTML = '<tr><td colspan="6" class="empty">No store data yet</td></tr>'; } else { tbody.innerHTML = stores.map(s => { const name = storeNames[s.store] || s.store; const color = storeColors[s.store] || '#64748b'; const confirmPct = s.total > 0 ? Math.round((s.confirmed / s.total) * 100) : 0; const barWidth = Math.max(confirmPct, 4); return `<tr><td><span class="store-dot"><span style="background:${color}"></span>${name}</span></td><td style="font-weight:600;font-family:'JetBrains Mono',monospace">${s.total}</td><td style="color:#2dd4bf;font-weight:600">${s.confirmed}</td><td style="color:#ef4444;font-weight:600">${s.declined}</td><td><div style="display:flex;align-items:center;gap:8px"><div style="flex:1;height:6px;background:#1e293b;border-radius:3px;overflow:hidden;max-width:80px"><div style="width:${barWidth}%;height:100%;background:${confirmPct >= 70 ? '#2dd4bf' : confirmPct >= 40 ? '#fbbf24' : '#ef4444'};border-radius:3px"></div></div><span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace">${confirmPct}%</span></div></td><td style="color:#fbbf24;font-weight:600">${s.reviews_sent}</td></tr>`; }).join(''); } } catch (e) { console.error('Failed to load charts:', e); } }
+    async function loadCharts() { const reportsTab = document.getElementById('tab-reports'); if (reportsTab.style.display === 'none') return; const days = document.getElementById('chart-days').value; try { const [dailyRes, responseRes, storeRes, windowRes] = await Promise.all([fetch(API + '/api/charts/daily?days=' + days), fetch(API + '/api/charts/responses'), fetch(API + '/api/charts/stores'), fetch(API + '/api/charts/time-windows')]); const daily = await dailyRes.json(); const responses = await responseRes.json(); const stores = await storeRes.json(); const windows = await windowRes.json(); const confirmRate = responses.total > 0 ? Math.round((responses.yes / responses.total) * 100) : 0; const declineRate = responses.total > 0 ? Math.round((responses.no / responses.total) * 100) : 0; const noReplyRate = responses.total > 0 ? Math.round((responses.noReply / responses.total) * 100) : 0; document.getElementById('kpi-confirm-rate').textContent = confirmRate + '%'; document.getElementById('kpi-confirm-sub').textContent = `${responses.yes} of ${responses.total} sent`; document.getElementById('kpi-decline-rate').textContent = declineRate + '%'; document.getElementById('kpi-decline-sub').textContent = `${responses.no} need rescheduling`; document.getElementById('kpi-reviews').textContent = responses.reviewsSent; document.getElementById('kpi-reviews-sub').textContent = 'Google review requests'; document.getElementById('kpi-noreply').textContent = noReplyRate + '%'; document.getElementById('kpi-noreply-sub').textContent = `${responses.noReply} no response`; destroyCharts(); const dailyLabels = daily.map(d => { const dt = new Date(d.date + 'T12:00:00'); return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); }); const dailyCtx = document.getElementById('chart-daily').getContext('2d'); dailyChart = new Chart(dailyCtx, { type: 'bar', data: { labels: dailyLabels, datasets: [{ label: 'Confirmed', data: daily.map(d => d.confirmed), backgroundColor: '#2dd4bf', borderRadius: 4, borderSkipped: false }, { label: 'Declined', data: daily.map(d => d.declined), backgroundColor: '#ef4444', borderRadius: 4, borderSkipped: false }, { label: 'No Reply', data: daily.map(d => d.total - d.confirmed - d.declined), backgroundColor: '#334155', borderRadius: 4, borderSkipped: false }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 } } }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#1e293b44' } } } } }); const respCtx = document.getElementById('chart-responses').getContext('2d'); responsesChart = new Chart(respCtx, { type: 'doughnut', data: { labels: ['Confirmed (YES)', 'Declined (NO)', 'Opted Out (STOP)', 'No Reply'], datasets: [{ data: [responses.yes, responses.no, responses.stop, responses.noReply], backgroundColor: ['#2dd4bf', '#ef4444', '#64748b', '#334155'], borderWidth: 0, hoverOffset: 6 }] }, options: { responsive: true, maintainAspectRatio: false, cutout: '62%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 14, font: { size: 11 } } }, tooltip: { callbacks: { label: function(ctx) { const total = ctx.dataset.data.reduce((a, b) => a + b, 0); const pct = total > 0 ? Math.round((ctx.raw / total) * 100) : 0; return `${ctx.label}: ${ctx.raw} (${pct}%)`; } } } } } }); const storeLabelsArr = stores.map(s => storeNames[s.store] || s.store); const storesCtx = document.getElementById('chart-stores').getContext('2d'); storesChart = new Chart(storesCtx, { type: 'bar', data: { labels: storeLabelsArr, datasets: [{ label: 'Confirmed', data: stores.map(s => s.confirmed), backgroundColor: '#2dd4bf', borderRadius: 4 }, { label: 'Declined', data: stores.map(s => s.declined), backgroundColor: '#ef4444', borderRadius: 4 }, { label: 'Other', data: stores.map(s => s.total - s.confirmed - s.declined), backgroundColor: '#334155', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: '#1e293b44' } } } } }); const windowLabels = windows.map(w => w.time_window); const windowCtx = document.getElementById('chart-windows').getContext('2d'); windowsChart = new Chart(windowCtx, { type: 'bar', data: { labels: windowLabels, datasets: [{ label: 'Deliveries', data: windows.map(w => w.count), backgroundColor: '#818cf8', borderRadius: 4 }] }, options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { stepSize: 1 }, grid: { color: '#1e293b44' } }, y: { grid: { display: false }, ticks: { font: { size: 11 } } } } } }); const perfTable = document.getElementById('store-perf-table'); if (stores.length === 0) { perfTable.innerHTML = '<tr><td colspan="6" class="empty">No store data yet</td></tr>'; } else { perfTable.innerHTML = stores.map(s => { const confirmPct = s.total > 0 ? Math.round((s.confirmed / s.total) * 100) : 0; return `<tr><td>${storeDot(s.store)}</td><td style="font-weight:600">${s.total}</td><td style="color:#2dd4bf;font-weight:600">${s.confirmed}</td><td style="color:#ef4444;font-weight:600">${s.declined}</td><td><div style="display:flex;align-items:center;gap:8px"><div style="width:60px;height:6px;background:#1e293b;border-radius:3px;overflow:hidden"><div style="width:${confirmPct}%;height:100%;background:${confirmPct >= 70 ? '#2dd4bf' : confirmPct >= 40 ? '#fbbf24' : '#ef4444'};border-radius:3px"></div></div><span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace">${confirmPct}%</span></div></td><td style="color:#fbbf24;font-weight:600">${s.reviews_sent}</td></tr>`; }).join(''); } } catch (e) { console.error('Failed to load charts:', e); } }
+    // ═══════════════════════════════════════════════════════
+    // Sale Reviews Functions
+    // ═══════════════════════════════════════════════════════
+    let reviewComparisonChart = null;
+    async function submitSaleReview() {
+      const name = document.getElementById('sr-name').value.trim();
+      const phone = document.getElementById('sr-phone').value.trim();
+      const sale = document.getElementById('sr-sale').value.trim();
+      if (!name || !phone || !sale) { showToast('Please fill in all fields'); return; }
+      const btn = document.getElementById('sr-submit-btn');
+      btn.textContent = '⏳ Generating & Sending...'; btn.disabled = true;
+      try {
+        const res = await fetch(API + '/api/reviews/sale', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customerName: name, phone: phone, saleNumber: sale }) });
+        const data = await res.json();
+        if (data.success) { showToast(data.message || 'Review request sent!'); document.getElementById('sr-name').value = ''; document.getElementById('sr-phone').value = ''; document.getElementById('sr-sale').value = ''; loadSaleReviews(); loadReviewComparison(); loadActivity(); }
+        else { showToast(data.error || 'Failed to send'); }
+      } catch (e) { showToast('Failed to send review request'); console.error('Sale review error:', e); }
+      finally { btn.textContent = '⭐ Send Review Request'; btn.disabled = false; }
+    }
+    async function loadSaleReviews() {
+      const store = document.getElementById('sr-filter-store').value;
+      let url = API + '/api/reviews/sale?limit=50';
+      if (store) url += '&store=' + store;
+      try {
+        const res = await fetch(url); const data = await res.json(); const tbody = document.getElementById('sr-table');
+        if (data.reviews.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="empty">No sale reviews yet. Use the form above to send your first one!</td></tr>'; return; }
+        tbody.innerHTML = data.reviews.map(r => {
+          const statusBadge = r.status === 'sent' ? '<span class="badge badge-sent">sent</span>' : r.status === 'failed' ? '<span class="badge badge-failed">failed</span>' : '<span class="badge badge-pending">pending</span>';
+          const clickedDisplay = r.clicked_at ? `<span style="color:#2dd4bf;font-weight:600">✓ ${new Date(r.clicked_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>` : '<span style="color:#475569">—</span>';
+          const sentDisplay = r.sent_at ? new Date(r.sent_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+          const msgPreview = r.ai_message ? r.ai_message.substring(0, 60) + (r.ai_message.length > 60 ? '...' : '') : '—';
+          return `<tr><td><div style="font-weight:600">${r.customer_name}</div><div class="mono" style="font-size:11px;color:#64748b">${r.phone}</div></td><td>${storeDot(r.store)}</td><td class="mono" style="color:#94a3b8">${r.sale_number}</td><td style="color:#94a3b8;font-size:12px;max-width:200px" title="${(r.ai_message || '').replace(/"/g, '&quot;')}">${msgPreview}</td><td>${statusBadge}</td><td>${clickedDisplay}</td><td style="color:#64748b;font-size:12px">${sentDisplay}</td><td><button class="btn btn-danger" onclick="deleteSaleReview(${r.id})" style="padding:5px 8px" title="Delete">✕</button></td></tr>`;
+        }).join('');
+      } catch (e) { console.error('Failed to load sale reviews:', e); }
+    }
+    async function deleteSaleReview(id) {
+      if (!confirm('Delete this sale review record?')) return;
+      try { await fetch(API + '/api/reviews/sale/' + id, { method: 'DELETE' }); showToast('Sale review deleted'); loadSaleReviews(); loadReviewComparison(); } catch (e) { showToast('Failed to delete'); }
+    }
+    async function loadReviewComparison() {
+      try {
+        const res = await fetch(API + '/api/reviews/comparison'); const data = await res.json();
+        document.getElementById('sr-sale-total').textContent = data.sale.total;
+        document.getElementById('sr-sale-clicked').textContent = data.sale.clicked;
+        document.getElementById('sr-sale-rate').textContent = data.sale.clickRate + '%';
+        document.getElementById('sr-delivery-total').textContent = data.delivery.total;
+        document.getElementById('sr-delivery-clicked').textContent = data.delivery.clicked;
+        document.getElementById('sr-delivery-rate').textContent = data.delivery.clickRate + '%';
+        if (reviewComparisonChart) { reviewComparisonChart.destroy(); reviewComparisonChart = null; }
+        const storeLabelsArr = [...new Set([...data.saleByStore.map(s => s.store), ...data.deliveryByStore.map(s => s.store)])];
+        const storeDisplayNames = { somerset: 'Somerset', london: 'London', georgetown: 'Georgetown', lexington: 'Nicholasville Rd' };
+        const saleData = storeLabelsArr.map(store => { const row = data.saleByStore.find(s => s.store === store); return row ? (row.total > 0 ? Math.round((row.clicked / row.total) * 100) : 0) : 0; });
+        const deliveryData = storeLabelsArr.map(store => { const row = data.deliveryByStore.find(s => s.store === store); return row ? (row.total > 0 ? Math.round((row.review_sent / row.total) * 100) : 0) : 0; });
+        const ctx = document.getElementById('chart-review-comparison').getContext('2d');
+        reviewComparisonChart = new Chart(ctx, { type: 'bar', data: { labels: storeLabelsArr.map(s => storeDisplayNames[s] || s), datasets: [{ label: 'Day-of-Sale Click Rate %', data: saleData, backgroundColor: '#fbbf24', borderRadius: 4, borderSkipped: false }, { label: 'Delivery-Day Click Rate %', data: deliveryData, backgroundColor: '#818cf8', borderRadius: 4, borderSkipped: false }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 11 } } }, y: { beginAtZero: true, max: 100, ticks: { stepSize: 25, font: { size: 11 }, callback: v => v + '%' }, grid: { color: '#1e293b44' } } } } });
+      } catch (e) { console.error('Failed to load review comparison:', e); }
+    }
     loadStats(); loadActivity(); checkConnections();
     setInterval(() => { loadStats(); loadActivity(); checkConnections(); }, 30000);
   </script>
