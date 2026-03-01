@@ -10,6 +10,7 @@ const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates")
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
 const { syncRoutes, startAutoSync, registerPlan, getTrackedPlans } = require("./services/sync");
+const { processSaleReview, recordClick, getComparisonData } = require("./services/sale-review");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -46,6 +47,7 @@ async function updateSpokeStopNotes(stopId, notes) {
     }
     const [, planId, stopSubId] = match;
     const liveUrl = `https://api.getcircuit.com/public/v0.2b/plans/${planId}/liveStops/${stopSubId}`;
+
     console.log("[Spoke API] Trying Live Stops API:", liveUrl);
 
     const res = await fetch(liveUrl, {
@@ -69,6 +71,42 @@ async function updateSpokeStopNotes(stopId, notes) {
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../public")));
+
+// ─── Authentication ─────────────────────────────────────
+function requireAuth(req, res, next) {
+  // Public paths — no auth needed
+  if (req.path === "/api/health") return next();
+  if (req.path === "/api/spoke/webhook") return next();
+  if (req.path === "/api/quo/webhook") return next();
+  if (req.path === "/api/auth/verify") return next();
+  if (req.path.startsWith("/r/")) return next();
+
+  // Static files (dashboard HTML/CSS/JS/images) — served without auth
+  if (!req.path.startsWith("/api/")) return next();
+
+  // Check admin password
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) return next(); // No password set = open access (local dev)
+
+  const authHeader = req.headers.authorization;
+  if (authHeader === `Bearer ${password}`) return next();
+
+  res.status(401).json({ error: "Unauthorized" });
+}
+
+app.use(requireAuth);
+
+// ─── Auth Verification Endpoint ─────────────────────────
+app.post("/api/auth/verify", (req, res) => {
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) return res.json({ valid: true, authRequired: false });
+
+  const authHeader = req.headers.authorization;
+  if (authHeader === `Bearer ${password}`) {
+    return res.json({ valid: true });
+  }
+  res.status(401).json({ valid: false });
+});
 
 // ─── Health Check ────────────────────────────────────────
 app.get("/api/health", (req, res) => {
@@ -511,24 +549,25 @@ app.post("/api/quo/webhook", async (req, res) => {
           "UPDATE notifications SET customer_response = 'no', response_at = ?, updated_at = ? WHERE id = ?"
         ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
 
-        logActivity("customer_declined", `${notification.customer_name} replied NO — starting reschedule`, notification.id);
-        console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO) — starting reschedule`);
+        logActivity("customer_declined", `${notification.customer_name} replied NO — needs rescheduling`, notification.id);
+        console.log(`[Quo Webhook] ${notification.customer_name} declined delivery (NO)`);
 
-        // Flag stop in Spoke so driver sees it
-        if (notification.spoke_stop_id) {
-          const updated = await updateSpokeStopNotes(notification.spoke_stop_id, "⚠️ CUSTOMER DECLINED");
-          if (updated) {
-            logActivity("spoke_stop_flagged", `Flagged stop in Spoke for ${notification.customer_name}`, notification.id);
-          }
+        // Start AI rescheduling conversation
+        try {
+          const reschedResult = await startRescheduleConversation(notification);
+          await sendSms(cleanFrom, reschedResult.reply);
+          logActivity("reschedule_started", `AI rescheduling started for ${notification.customer_name}`, notification.id);
+        } catch (e) {
+          console.error("[Quo Webhook] Failed to start rescheduling:", e.message);
+          try {
+            await sendSms(cleanFrom, "We understand you can't make the scheduled delivery. Please call us at (859) 555-0100 to reschedule.");
+          } catch (e2) { console.error("[Quo Webhook] Failed to send fallback reply:", e2.message); }
         }
-
-        // Start AI-powered reschedule conversation
-        await startRescheduleConversation(notification);
 
       } else if (body === "STOP") {
         db.prepare(
-          "UPDATE notifications SET customer_response = 'stop', updated_at = ? WHERE id = ?"
-        ).run(new Date().toISOString(), notification.id);
+          "UPDATE notifications SET customer_response = 'stop', response_at = ?, updated_at = ? WHERE id = ?"
+        ).run(new Date().toISOString(), new Date().toISOString(), notification.id);
 
         logActivity("customer_optout", `${notification.customer_name} opted out (STOP)`, notification.id);
 
@@ -651,6 +690,90 @@ app.post("/api/restore", express.json({ limit: "5mb" }), (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════
+// ─── Sale Review Routes (Day-of-Sale Review Solicitation) ─
+// ═══════════════════════════════════════════════════════════
+
+// Submit a new day-of-sale review request
+app.post("/api/reviews/sale", async (req, res) => {
+  const { customerName, phone, saleNumber } = req.body;
+
+  if (!customerName || !phone || !saleNumber) {
+    return res.status(400).json({ error: "customerName, phone, and saleNumber are required" });
+  }
+
+  try {
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const result = await processSaleReview({ customerName, phone, saleNumber, baseUrl });
+    res.json(result);
+  } catch (err) {
+    console.error("[SaleReview] Error:", err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// List all sale reviews (with optional filters)
+app.get("/api/reviews/sale", (req, res) => {
+  const { store, status, limit = 50, offset = 0 } = req.query;
+  let query = "SELECT * FROM sale_reviews WHERE 1=1";
+  const params = [];
+
+  if (store) {
+    query += " AND store = ?";
+    params.push(store);
+  }
+  if (status) {
+    query += " AND status = ?";
+    params.push(status);
+  }
+
+  query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
+  params.push(Number(limit), Number(offset));
+
+  const reviews = db.prepare(query).all(...params);
+  const total = db
+    .prepare(query.replace(/SELECT \*/, "SELECT COUNT(*) as count").replace(/ORDER BY.*/, ""))
+    .get(...params.slice(0, -2));
+
+  res.json({ reviews, total: total.count });
+});
+
+// Delete a sale review
+app.delete("/api/reviews/sale/:id", (req, res) => {
+  const review = db.prepare("SELECT * FROM sale_reviews WHERE id = ?").get(req.params.id);
+  if (!review) return res.status(404).json({ error: "Not found" });
+  db.prepare("DELETE FROM sale_reviews WHERE id = ?").run(req.params.id);
+  logActivity("sale_review_deleted", `Deleted sale review: ${review.customer_name} (Sale #${review.sale_number})`);
+  res.json({ success: true, deleted: review.id });
+});
+
+// Comparison data: sale vs delivery review performance
+app.get("/api/reviews/comparison", (req, res) => {
+  try {
+    const data = getComparisonData();
+    res.json(data);
+  } catch (err) {
+    console.error("[SaleReview] Comparison error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Tracked Redirect Endpoint ───────────────────────────
+// Short URL that logs the click, then redirects to the actual Google review page
+app.get("/r/:trackingId", (req, res) => {
+  const { trackingId } = req.params;
+  const reviewUrl = recordClick(trackingId);
+
+  if (reviewUrl) {
+    console.log(`[Redirect] Click tracked: ${trackingId} → ${reviewUrl}`);
+    return res.redirect(302, reviewUrl);
+  }
+
+  // Fallback: if tracking ID not found, redirect to a generic page
+  console.log(`[Redirect] Unknown tracking ID: ${trackingId}`);
+  res.redirect(302, "https://mattressoverstock.com");
+});
+
 // ─── Catch-all: serve dashboard ──────────────────────────
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../public/index.html"));
@@ -658,12 +781,8 @@ app.get("*", (req, res) => {
 
 // ─── Helper ──────────────────────────────────────────────
 function logActivity(type, detail, notificationId = null) {
-  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)").run(
-    type,
-    detail,
-    notificationId,
-    new Date().toISOString()
-  );
+  db.prepare("INSERT INTO activity_log (type, detail, notification_id, created_at) VALUES (?, ?, ?, ?)")
+    .run(type, detail, notificationId, new Date().toISOString());
 }
 
 // Make logActivity available to other modules

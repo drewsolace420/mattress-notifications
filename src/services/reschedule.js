@@ -464,18 +464,17 @@ async function startRescheduleConversation(notification) {
 
   if (!rules) {
     // Store not configured for automated rescheduling
-    await sendSms(
-      notification.phone,
-      "No problem! A member of our team will text you tomorrow after 10 AM to reschedule your delivery. Thank you!"
-    );
-    return;
+    return {
+      reply: "No problem! A member of our team will text you tomorrow after 10 AM to reschedule your delivery. Thank you!",
+      rescheduled: false,
+    };
   }
 
   // Set conversation state
   db.prepare("UPDATE notifications SET conversation_state = 'rescheduling', updated_at = ? WHERE id = ?")
     .run(new Date().toISOString(), notification.id);
 
-  // Send initial reschedule message — introduce Emma (AI assistant)
+  // Build initial reschedule message — introduce Emma (AI assistant)
   const firstName = notification.customer_name.split(" ")[0];
   let message = `No problem, ${firstName}! This is Emma, an AI assistant for Mattress Overstock. I can help reschedule your delivery. We deliver to your area on ${rules.dayNames}. What day works best for you?`;
 
@@ -483,13 +482,13 @@ async function startRescheduleConversation(notification) {
     message = `No problem, ${firstName}! This is Emma, an AI assistant for Mattress Overstock. I can help reschedule your delivery. We typically deliver to your area on ${rules.dayNames}. ${rules.flexibleNote} What day works best for you?`;
   }
 
-  await sendSms(notification.phone, message);
-
   // Log the initial assistant message
   db.prepare("INSERT INTO reschedule_conversations (notification_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)")
     .run(notification.id, message, new Date().toISOString());
 
   logActivity("reschedule_started", `Reschedule conversation started with ${notification.customer_name}`, notification.id);
+
+  return { reply: message, rescheduled: false };
 }
 
 function logActivity(type, detail, notificationId = null) {

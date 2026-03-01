@@ -107,6 +107,35 @@ try { db.exec(`
 `); } catch(e) {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_tracked_plans_date ON tracked_plans(delivery_date)"); } catch(e) {}
 
+// ─── Sale Reviews table (day-of-sale review solicitations) ───
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS sale_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    sale_number TEXT NOT NULL,
+    store TEXT NOT NULL,
+    ai_message TEXT,
+    tracking_id TEXT UNIQUE,
+    review_url TEXT,
+    status TEXT DEFAULT 'pending',
+    sent_at TEXT,
+    quo_message_id TEXT,
+    clicked_at TEXT,
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )
+`); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_sale_reviews_tracking ON sale_reviews(tracking_id)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_sale_reviews_store ON sale_reviews(store)"); } catch(e) {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_sale_reviews_status ON sale_reviews(status)"); } catch(e) {}
+try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_reviews_phone_sale ON sale_reviews(phone, sale_number)"); } catch(e) {}
+
+// Migration: delivery review click tracking columns
+try { db.exec("ALTER TABLE notifications ADD COLUMN review_tracking_id TEXT"); } catch(e) {}
+try { db.exec("ALTER TABLE notifications ADD COLUMN review_clicked_at TEXT"); } catch(e) {}
+
 // Migration: remove CHECK constraint on status column if present
 // Old schema had CHECK(status IN ('pending','sent','failed','delivered')) which blocks 'cancelled'
 try {
@@ -127,13 +156,15 @@ try {
         retry_count INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')),
         review_sent_at TEXT, conversation_state TEXT DEFAULT 'none',
-        reschedule_count INTEGER DEFAULT 0, rescheduled_from INTEGER
+        reschedule_count INTEGER DEFAULT 0, rescheduled_from INTEGER,
+        review_tracking_id TEXT, review_clicked_at TEXT
       );
       INSERT INTO notifications_new SELECT
         id, customer_name, phone, store, address, scheduled_date, time_window,
         product, driver, status, sent_at, quo_message_id, spoke_stop_id, spoke_route_id,
         raw_delivery_time, customer_response, response_at, error_message, retry_count,
-        created_at, updated_at, review_sent_at, conversation_state, reschedule_count, rescheduled_from
+        created_at, updated_at, review_sent_at, conversation_state, reschedule_count, rescheduled_from,
+        review_tracking_id, review_clicked_at
       FROM notifications;
       DROP TABLE notifications;
       ALTER TABLE notifications_new RENAME TO notifications;
