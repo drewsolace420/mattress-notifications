@@ -10,7 +10,8 @@ const { getSmsBody, isSendDay, isDeliveryDay } = require("./services/templates")
 const { startScheduler, executeDailySend, executeStaffSummary, getSchedulerStatus } = require("./services/scheduler");
 const { handleRescheduleMessage, startRescheduleConversation } = require("./services/reschedule");
 const { syncRoutes, startAutoSync, registerPlan, getTrackedPlans } = require("./services/sync");
-const { processSaleReview, recordClick, getComparisonData } = require("./services/sale-review");
+const { processSaleReview, recordClick, getComparisonData, cleanPhone } = require("./services/sale-review");
+const { parsePosCsv } = require("./services/pos-parser");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,7 +70,8 @@ async function updateSpokeStopNotes(stopId, notes) {
 
 // ─── Middleware ───────────────────────────────────────────
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
+app.use(express.text({ type: "text/csv", limit: "5mb" }));
 app.use(express.static(path.join(__dirname, "../public")));
 
 // ─── Authentication ─────────────────────────────────────
@@ -687,6 +689,174 @@ app.post("/api/restore", express.json({ limit: "5mb" }), (req, res) => {
     res.json({ success: true, restored });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// ─── POS CSV Upload Routes ────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+
+// Upload POS CSV — preview or send review requests
+app.post("/api/pos-upload", async (req, res) => {
+  try {
+    // Accept CSV as raw text body (Content-Type: text/csv) or JSON { csv: "..." }
+    let csvText;
+    if (typeof req.body === "string") {
+      csvText = req.body;
+    } else if (req.body && req.body.csv) {
+      csvText = req.body.csv;
+    } else {
+      return res.status(400).json({ error: "No CSV data provided. Send as text/csv body or JSON { csv: '...' }" });
+    }
+
+    const isPreview = req.query.preview === "true";
+
+    // Parse the CSV
+    const parsedSales = parsePosCsv(csvText);
+    const totalParsedLines = csvText.split(/\r?\n/).filter((l) => l.trim()).length;
+
+    // Deduplicate against existing data
+    const toSend = [];
+    const skipped = [];
+    const seenPhones = new Set();
+    const now = new Date();
+    const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    for (const sale of parsedSales) {
+      // Skip if phone already seen in this upload batch
+      if (seenPhones.has(sale.phone)) {
+        skipped.push({ customer_name: sale.customer_name, reason: `Duplicate phone in upload (sale #${sale.sale_number})` });
+        continue;
+      }
+
+      // Check: same phone + sale number already in sale_reviews
+      const existingExact = db.prepare(
+        "SELECT id FROM sale_reviews WHERE phone = ? AND sale_number = ?"
+      ).get(sale.phone, sale.sale_number);
+      if (existingExact) {
+        skipped.push({ customer_name: sale.customer_name, reason: `Already reviewed (sale #${sale.sale_number})` });
+        continue;
+      }
+
+      // Check: same phone got ANY sale_reviews entry in last 7 days
+      const recentSaleReview = db.prepare(
+        "SELECT id FROM sale_reviews WHERE phone = ? AND created_at >= ? LIMIT 1"
+      ).get(sale.phone, sevenDaysAgo);
+      if (recentSaleReview) {
+        skipped.push({ customer_name: sale.customer_name, reason: "Recent review sent (last 7 days)" });
+        continue;
+      }
+
+      // Check: same phone has notifications.review_sent_at in last 7 days
+      const recentDeliveryReview = db.prepare(
+        "SELECT id FROM notifications WHERE phone = ? AND review_sent_at IS NOT NULL AND review_sent_at >= ? LIMIT 1"
+      ).get(sale.phone, sevenDaysAgo);
+      if (recentDeliveryReview) {
+        skipped.push({ customer_name: sale.customer_name, reason: "Delivery review already sent (last 7 days)" });
+        continue;
+      }
+
+      seenPhones.add(sale.phone);
+      toSend.push(sale);
+    }
+
+    const deliveryCustomers = toSend.filter((s) => s.has_delivery).length;
+    const carryOutCustomers = toSend.filter((s) => !s.has_delivery).length;
+
+    // Preview mode — return what would be sent
+    if (isPreview) {
+      return res.json({
+        preview: true,
+        parsed_total: totalParsedLines,
+        unique_sales: parsedSales.length,
+        to_send: toSend.map((s) => ({
+          sale_number: s.sale_number,
+          customer_name: s.customer_name,
+          phone: s.phone,
+          store: s.store,
+          has_delivery: s.has_delivery,
+          products: s.products,
+          type: s.has_delivery ? "delivery" : "carry_out",
+        })),
+        skipped,
+        delivery_customers: deliveryCustomers,
+        carry_out_customers: carryOutCustomers,
+      });
+    }
+
+    // Send mode — process each customer
+    const baseUrl = process.env.SHORT_BASE_URL || `${req.protocol}://${req.get("host")}`;
+    const results = [];
+    let sentCount = 0;
+    let failedCount = 0;
+
+    for (const sale of toSend) {
+      try {
+        const result = await processSaleReview({
+          customerName: sale.customer_name,
+          phone: sale.phone,
+          saleNumber: sale.sale_number,
+          baseUrl,
+        });
+        results.push({
+          customer_name: sale.customer_name,
+          status: "sent",
+          tracking_id: result.saleReview?.trackingId || null,
+        });
+        sentCount++;
+      } catch (err) {
+        results.push({
+          customer_name: sale.customer_name,
+          status: "failed",
+          error: err.message,
+        });
+        failedCount++;
+      }
+    }
+
+    // Add skipped customers to results
+    for (const s of skipped) {
+      results.push({
+        customer_name: s.customer_name,
+        status: "skipped",
+        reason: s.reason,
+      });
+    }
+
+    // Log the upload
+    const filename = req.headers["x-filename"] || "pos-upload.csv";
+    try {
+      db.prepare(
+        "INSERT INTO pos_uploads (filename, total_parsed, total_sent, total_skipped, total_failed, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(filename, parsedSales.length, sentCount, skipped.length, failedCount, new Date().toISOString());
+    } catch (e) {
+      console.error("[POS Upload] Failed to log upload:", e.message);
+    }
+
+    logActivity("pos_upload", `POS CSV uploaded: ${sentCount} sent, ${skipped.length} skipped, ${failedCount} failed`);
+
+    res.json({
+      preview: false,
+      sent: sentCount,
+      failed: failedCount,
+      skipped: skipped.length,
+      results,
+    });
+  } catch (err) {
+    console.error("[POS Upload] Error:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get POS upload history
+app.get("/api/pos-uploads", (req, res) => {
+  try {
+    const uploads = db.prepare(
+      "SELECT * FROM pos_uploads ORDER BY created_at DESC LIMIT 20"
+    ).all();
+    res.json(uploads);
+  } catch (e) {
+    res.json([]);
   }
 });
 

@@ -121,6 +121,7 @@
     <button data-tab="notifications">Notifications</button>
     <button data-tab="reports">Reports</button>
     <button data-tab="sale-reviews">Sale Reviews</button>
+    <button data-tab="pos-upload">POS Upload</button>
     <button data-tab="settings">Settings</button>
   </nav>
   <main>
@@ -294,6 +295,101 @@
       </div>
     </div>
     <!-- ═══ END Sale Reviews Tab ═══ -->
+    <!-- ═══ POS Upload Tab ═══ -->
+    <div id="tab-pos-upload" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div>
+          <h2 style="font-size:22px;font-weight:700;letter-spacing:-0.5px">POS CSV Upload</h2>
+          <p style="color:#64748b;font-size:13px;margin-top:4px">Upload ProfitSystems POS exports to send batch review requests via AI + SMS</p>
+        </div>
+      </div>
+      <!-- Upload Zone -->
+      <div class="panel" style="border-left:3px solid #2dd4bf">
+        <h3 style="display:flex;align-items:center;gap:8px">CSV File Upload</h3>
+        <div id="pos-drop-zone" style="border:2px dashed #1e293b;border-radius:12px;padding:40px;text-align:center;cursor:pointer;transition:all 0.2s;margin-top:12px;background:#0f172a">
+          <div style="font-size:32px;margin-bottom:8px">📄</div>
+          <div style="font-size:14px;font-weight:600;color:#94a3b8">Drop CSV file here or click to browse</div>
+          <div style="font-size:12px;color:#475569;margin-top:6px">ProfitSystems TRAX export (.CSV)</div>
+          <input type="file" id="pos-file-input" accept=".csv,.CSV" style="display:none">
+        </div>
+        <div id="pos-file-info" style="display:none;margin-top:12px;padding:12px 16px;background:#1e293b44;border-radius:8px;display:flex;justify-content:space-between;align-items:center">
+          <div><span style="font-weight:600;color:#e2e8f0" id="pos-file-name">—</span><span style="color:#64748b;font-size:12px;margin-left:8px" id="pos-file-size">—</span></div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" id="pos-preview-btn" onclick="handlePosPreview()">Preview</button>
+            <button class="btn btn-outline" onclick="clearPosUpload()">Clear</button>
+          </div>
+        </div>
+      </div>
+      <!-- Preview Results -->
+      <div id="pos-preview-area" style="display:none;margin-top:18px">
+        <!-- Summary Stats -->
+        <div class="stats" id="pos-preview-stats">
+          <div class="stat-card"><div class="stat-label">Parsed Lines</div><div class="stat-value" id="pos-stat-parsed" style="color:#94a3b8">0</div><div class="stat-sub">CSV rows</div></div>
+          <div class="stat-card"><div class="stat-label">Unique Sales</div><div class="stat-value" id="pos-stat-unique" style="color:#818cf8">0</div><div class="stat-sub">customers found</div></div>
+          <div class="stat-card"><div class="stat-label">Will Send</div><div class="stat-value" id="pos-stat-send" style="color:#2dd4bf">0</div><div class="stat-sub">review requests</div></div>
+          <div class="stat-card"><div class="stat-label">Skipped</div><div class="stat-value" id="pos-stat-skip" style="color:#fbbf24">0</div><div class="stat-sub">duplicates/recent</div></div>
+        </div>
+        <!-- Customers to send -->
+        <div class="panel" style="margin-top:18px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <h3 style="font-size:15px;font-weight:700">Customers to Receive Reviews</h3>
+            <div style="display:flex;gap:12px;align-items:center">
+              <span style="font-size:11px;color:#2dd4bf;font-weight:600" id="pos-carry-count">0 carry-out</span>
+              <span style="font-size:11px;color:#fbbf24;font-weight:600" id="pos-delivery-count">0 delivery</span>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Customer</th><th>Phone</th><th>Store</th><th>Sale #</th><th>Type</th><th>Products</th></tr></thead>
+              <tbody id="pos-send-table"><tr><td colspan="6" class="empty">No customers to display</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- Skipped customers -->
+        <div class="panel" style="margin-top:18px" id="pos-skipped-panel">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:12px">Skipped Customers</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Customer</th><th>Reason</th></tr></thead>
+              <tbody id="pos-skip-table"><tr><td colspan="2" class="empty">No skipped customers</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- Send button -->
+        <div style="margin-top:18px;text-align:center">
+          <button class="btn btn-primary" id="pos-send-btn" onclick="confirmPosSend()" style="padding:14px 40px;font-size:15px;font-weight:700" disabled>Send Review Requests</button>
+          <div style="font-size:11px;color:#475569;margin-top:8px">This will generate AI messages and send SMS to all listed customers</div>
+        </div>
+      </div>
+      <!-- Send Results -->
+      <div id="pos-results-area" style="display:none;margin-top:18px">
+        <div class="panel" style="border-left:3px solid #2dd4bf">
+          <h3 style="font-size:15px;font-weight:700;margin-bottom:12px">Send Results</h3>
+          <div class="stats" style="margin-bottom:16px">
+            <div class="stat-card"><div class="stat-label">Sent</div><div class="stat-value" id="pos-result-sent" style="color:#2dd4bf">0</div></div>
+            <div class="stat-card"><div class="stat-label">Failed</div><div class="stat-value" id="pos-result-failed" style="color:#ef4444">0</div></div>
+            <div class="stat-card"><div class="stat-label">Skipped</div><div class="stat-value" id="pos-result-skipped" style="color:#fbbf24">0</div></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Customer</th><th>Status</th><th>Details</th></tr></thead>
+              <tbody id="pos-results-table"><tr><td colspan="3" class="empty">No results</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <!-- Upload History -->
+      <div class="panel" style="margin-top:24px">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:12px">Recent Uploads</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>File</th><th>Parsed</th><th>Sent</th><th>Skipped</th><th>Failed</th></tr></thead>
+            <tbody id="pos-history-table"><tr><td colspan="6" class="loading">Loading upload history...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <!-- ═══ END POS Upload Tab ═══ -->
     <div id="tab-settings" style="display:none">
       <h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Configuration</h2>
       <div class="panel"><h3>API Connections</h3><div class="grid-2"><div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong style="font-size:14px">Spoke Dispatch</strong><span id="spoke-config-status" style="font-size:11px;font-weight:600">Checking...</span></div><div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">Webhook URL</div><input readonly id="webhook-url" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace" value="Loading..."><div style="font-size:11px;color:#475569;margin-top:8px">Copy this URL into Spoke Dispatch → Settings → Integrations → Webhooks</div></div><div style="padding:16px;border-radius:10px;border:1px solid #1e293b;background:#1e293b22"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong style="font-size:14px">Quo (SMS)</strong><span id="quo-config-status" style="font-size:11px;font-weight:600">Checking...</span></div><div style="font-size:11px;color:#64748b;font-weight:600;margin-bottom:4px">API Endpoint</div><input readonly value="https://api.quo.com/v1/messages" style="width:100%;padding:10px;border-radius:8px;border:1px solid #1e293b;background:#0f172a;color:#64748b;font-size:12px;font-family:'JetBrains Mono',monospace"><div style="font-size:11px;color:#475569;margin-top:8px">Set QUO_API_KEY and QUO_PHONE_NUMBER_ID in Railway environment variables</div></div></div></div>
@@ -313,7 +409,7 @@
     async function checkAuth() { try { const res = await fetch(API + '/api/auth/verify', { method: 'POST', headers: getAuthHeaders() }); if (res.ok) { const data = await res.json(); if (data.valid) { if (sessionStorage.getItem(AUTH_KEY)) document.getElementById('logout-btn').style.display = ''; return true; } } sessionStorage.removeItem(AUTH_KEY); showLoginScreen(); return false; } catch (e) { return true; } }
     function initDashboard() { loadStats(); loadActivity(); checkConnections(); }
     let showAllTime = false;
-    document.querySelectorAll('nav button').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('nav button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none'); document.getElementById('tab-' + btn.dataset.tab).style.display = ''; if (btn.dataset.tab === 'notifications') loadNotifications(); if (btn.dataset.tab === 'reports') loadCharts(); if (btn.dataset.tab === 'settings') loadSettings(); if (btn.dataset.tab === 'sale-reviews') { loadSaleReviews(); loadReviewComparison(); } }); });
+    document.querySelectorAll('nav button').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('nav button').forEach(b => b.classList.remove('active')); btn.classList.add('active'); document.querySelectorAll('main > div[id^="tab-"]').forEach(t => t.style.display = 'none'); document.getElementById('tab-' + btn.dataset.tab).style.display = ''; if (btn.dataset.tab === 'notifications') loadNotifications(); if (btn.dataset.tab === 'reports') loadCharts(); if (btn.dataset.tab === 'settings') loadSettings(); if (btn.dataset.tab === 'sale-reviews') { loadSaleReviews(); loadReviewComparison(); } if (btn.dataset.tab === 'pos-upload') { loadPosUploadHistory(); } }); });
     function showToast(msg) { const t = document.getElementById('toast'); t.textContent = '✓ ' + msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
     const storeColors = { somerset: '#818cf8', london: '#f472b6', georgetown: '#38bdf8', lexington: '#c084fc', other: '#64748b', unknown: '#475569' };
     const storeNames = { somerset: 'Somerset', london: 'London', georgetown: 'Georgetown', lexington: 'Nicholasville Rd', other: 'Other', unknown: 'Unknown' };
@@ -399,6 +495,198 @@
         reviewComparisonChart = new Chart(ctx, { type: 'bar', data: { labels: storeLabelsArr.map(s => storeDisplayNames[s] || s), datasets: [{ label: 'Day-of-Sale Click Rate %', data: saleData, backgroundColor: '#fbbf24', borderRadius: 4, borderSkipped: false }, { label: 'Delivery-Day Click Rate %', data: deliveryData, backgroundColor: '#818cf8', borderRadius: 4, borderSkipped: false }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, padding: 16, font: { size: 11 } } } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 11 } } }, y: { beginAtZero: true, max: 100, ticks: { stepSize: 25, font: { size: 11 }, callback: v => v + '%' }, grid: { color: '#1e293b44' } } } } });
       } catch (e) { console.error('Failed to load review comparison:', e); }
     }
+    // ═══════════════════════════════════════════════════════
+    // POS Upload Functions
+    // ═══════════════════════════════════════════════════════
+    let posUploadCsvText = null;
+    let posUploadFileName = null;
+
+    // Drag-and-drop zone setup
+    (function setupPosDropZone() {
+      const dropZone = document.getElementById('pos-drop-zone');
+      const fileInput = document.getElementById('pos-file-input');
+      if (!dropZone || !fileInput) return;
+
+      dropZone.addEventListener('click', () => fileInput.click());
+
+      dropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#2dd4bf';
+        dropZone.style.background = '#0f172acc';
+      });
+      dropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#1e293b';
+        dropZone.style.background = '#0f172a';
+      });
+      dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = '#1e293b';
+        dropZone.style.background = '#0f172a';
+        const file = e.dataTransfer.files[0];
+        if (file) handlePosFile(file);
+      });
+
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) handlePosFile(file);
+      });
+    })();
+
+    function handlePosFile(file) {
+      posUploadFileName = file.name;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        posUploadCsvText = e.target.result;
+        document.getElementById('pos-file-name').textContent = file.name;
+        document.getElementById('pos-file-size').textContent = `(${(file.size / 1024).toFixed(1)} KB)`;
+        document.getElementById('pos-file-info').style.display = 'flex';
+        document.getElementById('pos-drop-zone').style.display = 'none';
+        document.getElementById('pos-preview-area').style.display = 'none';
+        document.getElementById('pos-results-area').style.display = 'none';
+      };
+      reader.readAsText(file);
+    }
+
+    function clearPosUpload() {
+      posUploadCsvText = null;
+      posUploadFileName = null;
+      document.getElementById('pos-file-input').value = '';
+      document.getElementById('pos-file-info').style.display = 'none';
+      document.getElementById('pos-drop-zone').style.display = '';
+      document.getElementById('pos-preview-area').style.display = 'none';
+      document.getElementById('pos-results-area').style.display = 'none';
+    }
+
+    async function handlePosPreview() {
+      if (!posUploadCsvText) { showToast('No file loaded'); return; }
+      const btn = document.getElementById('pos-preview-btn');
+      btn.textContent = 'Parsing...'; btn.disabled = true;
+      try {
+        const res = await authFetch(API + '/api/pos-upload?preview=true', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Filename': posUploadFileName || 'upload.csv' },
+          body: JSON.stringify({ csv: posUploadCsvText })
+        });
+        const data = await res.json();
+        if (data.error) { showToast(data.error); return; }
+        renderPosPreview(data);
+      } catch (e) { showToast('Preview failed: ' + e.message); console.error('POS preview error:', e); }
+      finally { btn.textContent = 'Preview'; btn.disabled = false; }
+    }
+
+    function renderPosPreview(data) {
+      document.getElementById('pos-preview-area').style.display = '';
+      document.getElementById('pos-results-area').style.display = 'none';
+
+      document.getElementById('pos-stat-parsed').textContent = data.parsed_total;
+      document.getElementById('pos-stat-unique').textContent = data.unique_sales;
+      document.getElementById('pos-stat-send').textContent = data.to_send.length;
+      document.getElementById('pos-stat-skip').textContent = data.skipped.length;
+      document.getElementById('pos-carry-count').textContent = data.carry_out_customers + ' carry-out';
+      document.getElementById('pos-delivery-count').textContent = data.delivery_customers + ' delivery';
+
+      // Render to-send table
+      const sendTbody = document.getElementById('pos-send-table');
+      if (data.to_send.length === 0) {
+        sendTbody.innerHTML = '<tr><td colspan="6" class="empty">No customers to send — all deduped or filtered</td></tr>';
+      } else {
+        sendTbody.innerHTML = data.to_send.map(s => {
+          const typeColor = s.type === 'carry_out' ? '#2dd4bf' : '#fbbf24';
+          const typeLabel = s.type === 'carry_out' ? 'Carry-out' : 'Delivery';
+          const productsStr = (s.products || []).join(', ') || '—';
+          return `<tr>
+            <td style="font-weight:600">${s.customer_name}</td>
+            <td class="mono" style="font-size:11px;color:#64748b">${s.phone}</td>
+            <td>${storeDot(s.store)}</td>
+            <td class="mono" style="color:#94a3b8">${s.sale_number}</td>
+            <td><span style="color:${typeColor};font-weight:600;font-size:12px">${typeLabel}</span></td>
+            <td style="color:#94a3b8;font-size:12px;max-width:200px">${productsStr}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      // Render skipped table
+      const skipTbody = document.getElementById('pos-skip-table');
+      const skipPanel = document.getElementById('pos-skipped-panel');
+      if (data.skipped.length === 0) {
+        skipPanel.style.display = 'none';
+      } else {
+        skipPanel.style.display = '';
+        skipTbody.innerHTML = data.skipped.map(s =>
+          `<tr><td style="font-weight:600">${s.customer_name}</td><td style="color:#fbbf24;font-size:12px">${s.reason}</td></tr>`
+        ).join('');
+      }
+
+      // Enable/disable send button
+      const sendBtn = document.getElementById('pos-send-btn');
+      sendBtn.disabled = data.to_send.length === 0;
+      sendBtn.textContent = data.to_send.length > 0
+        ? `Send ${data.to_send.length} Review Request${data.to_send.length > 1 ? 's' : ''}`
+        : 'No Reviews to Send';
+    }
+
+    async function confirmPosSend() {
+      if (!posUploadCsvText) { showToast('No file loaded'); return; }
+      if (!confirm('Send review request SMS to all listed customers?')) return;
+      const btn = document.getElementById('pos-send-btn');
+      btn.textContent = 'Sending...'; btn.disabled = true;
+      try {
+        const res = await authFetch(API + '/api/pos-upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Filename': posUploadFileName || 'upload.csv' },
+          body: JSON.stringify({ csv: posUploadCsvText })
+        });
+        const data = await res.json();
+        if (data.error) { showToast(data.error); btn.textContent = 'Send Review Requests'; btn.disabled = false; return; }
+
+        // Show results
+        document.getElementById('pos-results-area').style.display = '';
+        document.getElementById('pos-result-sent').textContent = data.sent;
+        document.getElementById('pos-result-failed').textContent = data.failed;
+        document.getElementById('pos-result-skipped').textContent = data.skipped;
+
+        const resultsTbody = document.getElementById('pos-results-table');
+        resultsTbody.innerHTML = data.results.map(r => {
+          const statusColor = r.status === 'sent' ? '#2dd4bf' : r.status === 'failed' ? '#ef4444' : '#fbbf24';
+          const detail = r.tracking_id ? `Tracking: ${r.tracking_id}` : r.error || r.reason || '';
+          return `<tr>
+            <td style="font-weight:600">${r.customer_name}</td>
+            <td><span style="color:${statusColor};font-weight:600;font-size:12px;text-transform:uppercase">${r.status}</span></td>
+            <td style="color:#64748b;font-size:12px">${detail}</td>
+          </tr>`;
+        }).join('');
+
+        showToast(`POS upload complete: ${data.sent} sent, ${data.failed} failed, ${data.skipped} skipped`);
+        loadPosUploadHistory();
+        loadActivity();
+      } catch (e) { showToast('Send failed: ' + e.message); console.error('POS send error:', e); }
+      finally { btn.textContent = 'Send Review Requests'; btn.disabled = false; }
+    }
+
+    async function loadPosUploadHistory() {
+      try {
+        const res = await authFetch(API + '/api/pos-uploads');
+        const uploads = await res.json();
+        const tbody = document.getElementById('pos-history-table');
+        if (!uploads || uploads.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="empty">No uploads yet</td></tr>';
+          return;
+        }
+        tbody.innerHTML = uploads.map(u => {
+          const date = new Date(u.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+          return `<tr>
+            <td style="color:#94a3b8;font-size:12px">${date}</td>
+            <td style="font-weight:600">${u.filename || '—'}</td>
+            <td class="mono" style="color:#818cf8">${u.total_parsed}</td>
+            <td class="mono" style="color:#2dd4bf">${u.total_sent}</td>
+            <td class="mono" style="color:#fbbf24">${u.total_skipped}</td>
+            <td class="mono" style="color:#ef4444">${u.total_failed}</td>
+          </tr>`;
+        }).join('');
+      } catch (e) { console.error('Failed to load upload history:', e); }
+    }
+
     checkAuth().then(ok => { if (ok) initDashboard(); });
     setInterval(() => { if (document.getElementById('login-overlay').style.display !== 'flex') { loadStats(); loadActivity(); checkConnections(); } }, 30000);
   </script>

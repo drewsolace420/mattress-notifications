@@ -350,6 +350,7 @@ module.exports = {
   recordClick,
   getComparisonData,
   resolveStoreFromSaleNumber,
+  cleanPhone,
   STORE_REVIEW_LINKS,
   STORE_DISPLAY_NAMES,
 };

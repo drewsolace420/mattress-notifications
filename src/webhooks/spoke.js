@@ -463,6 +463,18 @@ async function processDeliveryComplete(webhookData) {
       return;
     }
 
+    // ─── Check if customer already clicked a sale-day review link ───
+    const directSaleReviewClick = db.prepare(
+      "SELECT id, clicked_at FROM sale_reviews WHERE phone = ? AND clicked_at IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+    ).get(cleanPhone(phone));
+
+    if (directSaleReviewClick) {
+      console.log(`[Spoke] Customer already clicked sale-day review link — suppressing delivery review for ${customerName}`);
+      logActivity("delivery_review_suppressed",
+        `Delivery review suppressed for ${customerName} — sale-day review already clicked`);
+      return;
+    }
+
     const reviewLink = STORE_REVIEW_LINKS[store] || null;
     const storeName = STORE_DISPLAY_NAMES[store] || "Mattress Overstock";
 
@@ -495,6 +507,24 @@ async function processDeliveryComplete(webhookData) {
   if (store === "other") {
     console.log("[Spoke] Store is 'other' (sale prefix 1) — skipping review solicitation");
     logActivity("delivery_complete", `Delivery complete for ${notification.customer_name} — no review (store: other)`, notification.id);
+    db.prepare(
+      "UPDATE notifications SET status = 'delivered', updated_at = ? WHERE id = ?"
+    ).run(new Date().toISOString(), notification.id);
+    return;
+  }
+
+  // ─── Check if customer already clicked a sale-day review link ───
+  const saleReviewClick = db.prepare(
+    "SELECT id, clicked_at FROM sale_reviews WHERE phone = ? AND clicked_at IS NOT NULL ORDER BY created_at DESC LIMIT 1"
+  ).get(notification.phone);
+
+  if (saleReviewClick) {
+    console.log(`[Spoke] Customer already clicked sale-day review link — suppressing delivery review for ${notification.customer_name}`);
+    logActivity("delivery_review_suppressed",
+      `Delivery review suppressed for ${notification.customer_name} — sale-day review already clicked`,
+      notification.id);
+
+    // Still mark as delivered, just don't send the review
     db.prepare(
       "UPDATE notifications SET status = 'delivered', updated_at = ? WHERE id = ?"
     ).run(new Date().toISOString(), notification.id);

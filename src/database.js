@@ -136,6 +136,20 @@ try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sale_reviews_phone_sale ON 
 try { db.exec("ALTER TABLE notifications ADD COLUMN review_tracking_id TEXT"); } catch(e) {}
 try { db.exec("ALTER TABLE notifications ADD COLUMN review_clicked_at TEXT"); } catch(e) {}
 
+// pos_uploads — track CSV upload history
+try { db.exec(`
+  CREATE TABLE IF NOT EXISTS pos_uploads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    total_parsed INTEGER DEFAULT 0,
+    total_sent INTEGER DEFAULT 0,
+    total_skipped INTEGER DEFAULT 0,
+    total_failed INTEGER DEFAULT 0,
+    uploaded_by TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+  )
+`); } catch(e) {}
+
 // Migration: remove CHECK constraint on status column if present
 // Old schema had CHECK(status IN ('pending','sent','failed','delivered')) which blocks 'cancelled'
 try {
