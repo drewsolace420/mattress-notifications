@@ -711,9 +711,19 @@ app.post("/api/pos-upload", async (req, res) => {
 
     const isPreview = req.query.preview === "true";
 
+    // Optional: list of sale numbers to exclude (customer removed from preview)
+    const excludeSales = new Set(
+      Array.isArray(req.body?.exclude) ? req.body.exclude.map(String) : []
+    );
+
     // Parse the CSV
-    const parsedSales = parsePosCsv(csvText);
+    let parsedSales = parsePosCsv(csvText);
     const totalParsedLines = csvText.split(/\r?\n/).filter((l) => l.trim()).length;
+
+    // Filter out excluded customers
+    if (excludeSales.size > 0) {
+      parsedSales = parsedSales.filter((s) => !excludeSales.has(s.sale_number));
+    }
 
     // Deduplicate against existing data
     const toSend = [];
@@ -797,6 +807,7 @@ app.post("/api/pos-upload", async (req, res) => {
           phone: sale.phone,
           saleNumber: sale.sale_number,
           baseUrl,
+          saleDate: sale.sale_date,
         });
         results.push({
           customer_name: sale.customer_name,

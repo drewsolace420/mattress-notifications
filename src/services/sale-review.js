@@ -71,15 +71,44 @@ function logActivity(type, detail, notificationId = null) {
 }
 
 /**
- * Generate a personalized review request message using Claude Sonnet 4.5
+ * Compute a natural timing phrase based on when the sale happened.
+ * Returns { timingContext, timingPrompt } for the AI prompt.
  */
-async function generateReviewMessage(customerFirstName, storeName) {
+function getSaleTimingContext(saleDate) {
+  if (!saleDate) return { timingContext: "today", timingPrompt: "They're still in the store or just left." };
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const sale = new Date(saleDate + "T12:00:00");
+  sale.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((today - sale) / (1000 * 60 * 60 * 24));
+
+  if (diffDays <= 0) {
+    return { timingContext: "today", timingPrompt: "They're still in the store or just left." };
+  } else if (diffDays === 1) {
+    return { timingContext: "yesterday", timingPrompt: "They purchased yesterday." };
+  } else if (diffDays <= 3) {
+    return { timingContext: `${diffDays} days ago`, timingPrompt: `They purchased ${diffDays} days ago.` };
+  } else {
+    return { timingContext: "recently", timingPrompt: "They purchased recently." };
+  }
+}
+
+/**
+ * Generate a personalized review request message using Claude Sonnet 4.5
+ *
+ * @param {string} customerFirstName
+ * @param {string} storeName
+ * @param {string|null} saleDate - Optional YYYY-MM-DD sale date for timing context
+ */
+async function generateReviewMessage(customerFirstName, storeName, saleDate) {
+  const { timingContext, timingPrompt } = getSaleTimingContext(saleDate);
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
     // Fallback template if no API key
     console.log("[SaleReview] No ANTHROPIC_API_KEY — using template fallback");
-    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} today. We'd love to hear about your experience — your review helps our small team a lot!`;
+    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} ${timingContext}. We'd love to hear about your experience — your review helps our small team a lot!`;
   }
 
   try {
@@ -102,11 +131,12 @@ async function generateReviewMessage(customerFirstName, storeName) {
 - Don't use emojis
 - Don't include any links — the link will be appended separately
 - Don't say "click" or "tap" — just end with something natural that flows into a link
-- Vary your messages — don't always start with "Hi" or "Hey"`,
+- Vary your messages — don't always start with "Hi" or "Hey"
+- IMPORTANT: The customer purchased ${timingContext}. Use appropriate timing language — do NOT say "today" if they bought yesterday or earlier.`,
         messages: [
           {
             role: "user",
-            content: `Write an SMS review request for ${customerFirstName} who just purchased from ${storeName}. They're still in the store or just left. Keep it brief and warm.`,
+            content: `Write an SMS review request for ${customerFirstName} who purchased from ${storeName}. ${timingPrompt} Keep it brief and warm.`,
           },
         ],
       }),
@@ -128,7 +158,7 @@ async function generateReviewMessage(customerFirstName, storeName) {
     return aiMessage;
   } catch (err) {
     console.error("[SaleReview] Claude generation failed, using fallback:", err.message);
-    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} today. We'd love to hear about your experience — your review helps our small team a lot!`;
+    return `Hi ${customerFirstName}! Thank you for shopping with ${storeName} ${timingContext}. We'd love to hear about your experience — your review helps our small team a lot!`;
   }
 }
 
@@ -140,9 +170,10 @@ async function generateReviewMessage(customerFirstName, storeName) {
  * @param {string} params.phone - Customer phone number
  * @param {string} params.saleNumber - Sale number (prefix determines store)
  * @param {string} params.baseUrl - App base URL for building tracked redirect links
+ * @param {string} [params.saleDate] - Optional YYYY-MM-DD sale date for AI timing context
  * @returns {object} { success, saleReview, message }
  */
-async function processSaleReview({ customerName, phone, saleNumber, baseUrl }) {
+async function processSaleReview({ customerName, phone, saleNumber, baseUrl, saleDate }) {
   const cleanedPhone = cleanPhone(phone);
   if (!cleanedPhone) {
     throw new Error("Invalid phone number");
@@ -181,7 +212,7 @@ async function processSaleReview({ customerName, phone, saleNumber, baseUrl }) {
   const trackedLink = `${shortBase}/r/${trackingId}`;
 
   // Generate AI message via Claude Sonnet 4.5
-  const aiMessage = await generateReviewMessage(firstName, storeName);
+  const aiMessage = await generateReviewMessage(firstName, storeName, saleDate || null);
 
   // Combine message + tracked link
   const fullMessage = `${aiMessage}\n${trackedLink}`;

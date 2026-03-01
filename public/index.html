@@ -340,8 +340,8 @@
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Customer</th><th>Phone</th><th>Store</th><th>Sale #</th><th>Type</th><th>Products</th></tr></thead>
-              <tbody id="pos-send-table"><tr><td colspan="6" class="empty">No customers to display</td></tr></tbody>
+              <thead><tr><th>Customer</th><th>Phone</th><th>Store</th><th>Sale #</th><th>Type</th><th>Products</th><th></th></tr></thead>
+              <tbody id="pos-send-table"><tr><td colspan="7" class="empty">No customers to display</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -500,6 +500,8 @@
     // ═══════════════════════════════════════════════════════
     let posUploadCsvText = null;
     let posUploadFileName = null;
+    let posExcludedSales = new Set();
+    let posPreviewData = null;
 
     // Drag-and-drop zone setup
     (function setupPosDropZone() {
@@ -535,6 +537,8 @@
 
     function handlePosFile(file) {
       posUploadFileName = file.name;
+      posExcludedSales = new Set();
+      posPreviewData = null;
       const reader = new FileReader();
       reader.onload = (e) => {
         posUploadCsvText = e.target.result;
@@ -551,6 +555,8 @@
     function clearPosUpload() {
       posUploadCsvText = null;
       posUploadFileName = null;
+      posExcludedSales = new Set();
+      posPreviewData = null;
       document.getElementById('pos-file-input').value = '';
       document.getElementById('pos-file-info').style.display = 'none';
       document.getElementById('pos-drop-zone').style.display = '';
@@ -566,13 +572,28 @@
         const res = await authFetch(API + '/api/pos-upload?preview=true', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Filename': posUploadFileName || 'upload.csv' },
-          body: JSON.stringify({ csv: posUploadCsvText })
+          body: JSON.stringify({ csv: posUploadCsvText, exclude: Array.from(posExcludedSales) })
         });
         const data = await res.json();
         if (data.error) { showToast(data.error); return; }
+        posPreviewData = data;
         renderPosPreview(data);
       } catch (e) { showToast('Preview failed: ' + e.message); console.error('POS preview error:', e); }
       finally { btn.textContent = 'Preview'; btn.disabled = false; }
+    }
+
+    function removePosCustomer(saleNumber, customerName) {
+      posExcludedSales.add(saleNumber);
+      if (posPreviewData) {
+        // Remove from to_send and add to skipped
+        posPreviewData.to_send = posPreviewData.to_send.filter(s => s.sale_number !== saleNumber);
+        posPreviewData.skipped.push({ customer_name: customerName, reason: 'Removed by staff' });
+        // Recompute counts
+        posPreviewData.delivery_customers = posPreviewData.to_send.filter(s => s.has_delivery).length;
+        posPreviewData.carry_out_customers = posPreviewData.to_send.filter(s => !s.has_delivery).length;
+        renderPosPreview(posPreviewData);
+      }
+      showToast(`Removed ${customerName}`);
     }
 
     function renderPosPreview(data) {
@@ -589,12 +610,13 @@
       // Render to-send table
       const sendTbody = document.getElementById('pos-send-table');
       if (data.to_send.length === 0) {
-        sendTbody.innerHTML = '<tr><td colspan="6" class="empty">No customers to send — all deduped or filtered</td></tr>';
+        sendTbody.innerHTML = '<tr><td colspan="7" class="empty">No customers to send — all deduped or filtered</td></tr>';
       } else {
         sendTbody.innerHTML = data.to_send.map(s => {
           const typeColor = s.type === 'carry_out' ? '#2dd4bf' : '#fbbf24';
           const typeLabel = s.type === 'carry_out' ? 'Carry-out' : 'Delivery';
           const productsStr = (s.products || []).join(', ') || '—';
+          const escapedName = s.customer_name.replace(/'/g, "\\'");
           return `<tr>
             <td style="font-weight:600">${s.customer_name}</td>
             <td class="mono" style="font-size:11px;color:#64748b">${s.phone}</td>
@@ -602,6 +624,7 @@
             <td class="mono" style="color:#94a3b8">${s.sale_number}</td>
             <td><span style="color:${typeColor};font-weight:600;font-size:12px">${typeLabel}</span></td>
             <td style="color:#94a3b8;font-size:12px;max-width:200px">${productsStr}</td>
+            <td><button class="btn btn-danger" onclick="removePosCustomer('${s.sale_number}', '${escapedName}')" style="padding:5px 8px" title="Remove customer">✕</button></td>
           </tr>`;
         }).join('');
       }
@@ -635,7 +658,7 @@
         const res = await authFetch(API + '/api/pos-upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Filename': posUploadFileName || 'upload.csv' },
-          body: JSON.stringify({ csv: posUploadCsvText })
+          body: JSON.stringify({ csv: posUploadCsvText, exclude: Array.from(posExcludedSales) })
         });
         const data = await res.json();
         if (data.error) { showToast(data.error); btn.textContent = 'Send Review Requests'; btn.disabled = false; return; }
